@@ -111,6 +111,39 @@ the three servers schedulable. Documented in `decisions.md` §12. The lesson: AI
 "reasonable defaults" still need to be checked against the specific thing the work is
 meant to demonstrate.
 
+## Verified MCP-tool use
+
+Rule 3 in `CLAUDE.md` ("use the Verda MCP server for anything Verda-specific") had until
+now been a stated policy rather than a demonstrated one. This section records the first
+use verified to have gone through the MCP server's own tools rather than a shell call to
+the `verda` CLI.
+
+**2026-08-17 — `mcp__verda__list_vms`, no arguments.** Invoked as an MCP tool call over
+the `verda` server declared in `.mcp.json` (`verda mcp serve`), confirmed connected via
+`claude mcp list`. No `Bash` tool call was made; the CLI was not shelled out to. The tool
+returned the live inventory of all four instances:
+
+| Hostname | Instance type | Status | Region | Public IP | Instance ID |
+|---|---|---|---|---|---|
+| `routa-mgmt` | `CPU.4V.16G` (4 vCPU / 16 GB) | running | FIN-03 | 95.133.252.175 | `653bdc28-0c59-44bf-bcf4-fb7c2a0ee3b4` |
+| `routa-cp-1` | `CPU.16V.64G` (16 vCPU / 64 GB) | running | FIN-03 | 95.133.252.180 | `465aad14-b5ac-4d0f-8214-cf279c3c14e4` |
+| `routa-cp-2` | `CPU.16V.64G` (16 vCPU / 64 GB) | running | FIN-03 | 95.133.253.19 | `cce62c93-959f-44b5-b473-a109b7063247` |
+| `routa-cp-3` | `CPU.16V.64G` (16 vCPU / 64 GB) | running | FIN-03 | 95.133.252.152 | `5c065d78-81b2-4c13-ba3b-8ed85f6b11a7` |
+
+All four run `ubuntu-24.04` on the pay-as-you-go contract, share the single SSH key
+`c52161b9-7a14-43e7-9c6e-fc06e4044ef1`, and carry one dynamic OS volume each. The three
+`routa-cp-*` nodes were created within roughly one second of each other at 17:12 UTC — the
+Terraform apply — with `routa-mgmt` created earlier at 16:50 UTC.
+
+This is also a small confirmation of the shape the repo intends: the topology on the
+provider side matches what `terraform/` declares (1 mgmt + 3 cluster nodes, the fallback
+worker type `CPU.16V.64G` from commit `ba2eed6`, and the `ubuntu-24.04` image resolved in
+`632b217`), read back from Verda's live API rather than from state or from recollection.
+
+The tool also returns a `price_per_hour` figure per instance. Those are catalog estimates
+that cannot see credits or contract terms, so they are deliberately not reproduced here as
+spend — the web console is authoritative for actual charges.
+
 ## Summary
 
 AI tooling meaningfully accelerated this build — live-fetched and pinned versions, correct

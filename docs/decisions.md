@@ -886,17 +886,36 @@ The `image` variable flagged as unresolved since Section 8 (step 6) and reiterat
 in Sections 10 and 12 is now resolved. Not changed retroactively in those earlier
 entries — they're an accurate record of what was known at the time.
 
-**Method:** the Verda MCP server declared in `.mcp.json` (`verda mcp serve`) is not
-actually connected in this Claude Code session — it never surfaced when searching
-available tools. Fell back to the CLI directly (`verda images --type CPU.8V.32G -o
-json`), which is what the MCP server wraps per docs.verda.com/cli/mcp, so the data
-source is the same either way. Worth a line for the report: the MCP-first instruction
-in `CLAUDE.md` is a preference for freshness over training data, not a hard
-dependency on the MCP transport specifically — the CLI is an equally-live fallback.
+**Method:** the Verda MCP server declared in `.mcp.json` (`verda mcp serve`) was not
+available as a tool at the time of this lookup — because it was **pending interactive
+approval**, not because it was misconfigured or broken. Project-scoped `.mcp.json`
+servers do not auto-start: Claude Code requires the user to approve each one
+explicitly before it will run. That is a deliberate security gate, and a correct one
+— a project-scoped `.mcp.json` is checked into the repo, so auto-executing it would
+mean cloning a repository silently launches whatever command that file names. The
+approval prompt is the thing standing between "clone a repo" and "execute arbitrary
+local processes."
+
+So the correct reading is *not* "the MCP server never surfaced / was unavailable."
+It had simply not been approved yet in this session. Fell back to the CLI directly
+(`verda images --type CPU.8V.32G -o json`), which is what the MCP server wraps per
+docs.verda.com/cli/mcp, so the data source is identical either way. Worth a line for
+the report: the MCP-first instruction in `CLAUDE.md` is a preference for freshness
+over training data, not a hard dependency on the MCP transport specifically — the CLI
+is an equally-live fallback, and the image slug recorded below is unaffected by which
+of the two returned it.
+
+**Resolved later the same day.** The server was approved and now reports `✔ Connected`
+under `claude mcp list`, and the first lookup verified to have gone through the MCP
+server's own tools (`mcp__verda__list_vms`) rather than a shell call to the CLI is
+recorded in `docs/ai-usage.md` under "Verified MCP-tool use."
 
 **Cross-checked against both instance types actually used** (`CPU.8V.32G` for
 cluster nodes, `CPU.4V.16G` for mgmt) — same image compatible with both, so a single
 shared `var.image` (as already structured in `instances.tf`) is valid.
+(Note: this was the cluster-node type at the time of writing; see §14 for the
+capacity-driven fallback to CPU.16V.64G, confirmed still running via the MCP
+verified-use check above.)
 
 **Candidates returned for Ubuntu 24.04** (all `category: ubuntu`):
 
