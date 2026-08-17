@@ -4,3 +4,8 @@
 - import_playbook: hardening.yml
 - import_playbook: rke2-cluster.yml
 - import_playbook: kubeconfig-fetch.yml
+# Management plane. Runs last because it is independent of the RKE2 cluster — it
+# stands up its own single-node k3s on routa-mgmt. Requires RANCHER_BOOTSTRAP_PASSWORD
+# in the environment and -e rancher_letsencrypt_email=...; both are asserted by the
+# rancher role rather than failing obscurely mid-chart.
+- import_playbook: mgmt-rancher.yml

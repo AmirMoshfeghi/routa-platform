@@ -1,0 +1,161 @@
+---
+# Variables for the [mgmt] group (routa-mgmt) — the single-node k3s cluster that
+# runs Rancher Manager. This is deliberately NOT part of the RKE2 workload cluster:
+# Rancher manages clusters, so it must survive the cluster it manages.
+#
+# Instance facts confirmed 2026-08-17 via the Verda MCP server (`describe_vm` on
+# 653bdc28-0c59-44bf-bcf4-fb7c2a0ee3b4): routa-mgmt is CPU.4V.16G (4 vCPU / 16 GB),
+# ubuntu-24.04, FIN-03, running, public IP 95.133.252.175. Comfortably above
+# Rancher's single-node requirement.
+
+# --- The version decision that drives everything else ---------------------------
+# The Rancher Helm chart carries a hard `kubeVersion` cap, and it differs by
+# release channel. Read verbatim from the published chart indexes on 2026-08-17:
+#
+#   chart 2.14.3 (releases.rancher.com/server-charts/stable) -> kubeVersion "< 1.36.0-0"
+#   chart 2.15.0 (releases.rancher.com/server-charts/latest) -> kubeVersion "< 1.37.0-0"
+#
+# Our RKE2 workload cluster is v1.36.3+rke2r1 (see all.yml). Rancher v2.15 is the
+# first release to certify Kubernetes 1.36 for imported downstream clusters — it
+# "adds support for Kubernetes v1.36 while removing support for Kubernetes v1.33"
+# (https://github.com/rancher/rancher/releases/tag/v2.15.0, released 2026-07-30).
+# Rancher 2.14.x tops out at 1.35 for imports and therefore *cannot* import our
+# existing cluster. So 2.15.0 it is.
+#
+# Known tradeoff, accepted deliberately: v2.15.0 is a .0 release, is only in the
+# `latest` channel (not `stable`), and SUSE has not published a support-matrix page
+# for it yet — https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/
+# tops out at v2.14.4, and .../rancher-v2-15-0/ returns HTTP 404 as of 2026-08-17.
+# See docs/decisions.md Section 17.
+rancher_chart_version: "2.15.0"
+rancher_helm_repo_name: "rancher-latest"
+rancher_helm_repo_url: "https://releases.rancher.com/server-charts/latest"
+
+# --- k3s on the mgmt node -------------------------------------------------------
+# v1.35.7+k3s1 is the newest 1.35 patch (2026-08-04, https://github.com/k3s-io/k3s/releases).
+#
+# Pinned to 1.35 rather than 1.36 ON PURPOSE, and it is worth understanding why,
+# because the obvious move is to match the RKE2 cluster's 1.36.3 for symmetry.
+#
+# The local cluster's Kubernetes version has nothing to do with which downstream
+# versions Rancher can import — that range comes from the Rancher version, not from
+# whatever k3s runs underneath it. Rancher 2.15.0 will import our 1.36.3 RKE2
+# cluster regardless of the local cluster being 1.35.
+#
+# What 1.35 buys: it satisfies BOTH chart caps above (`< 1.36.0-0` and
+# `< 1.37.0-0`), so the stable-channel 2.14.x chart stays installable on this node
+# as a fallback if 2.15.0 turns out to be a problem. Installing k3s 1.36 here would
+# violate `< 1.36.0-0` permanently and close that door without rebuilding the node.
+# Optionality at zero cost.
+#
+# Secondary benefit: sidesteps the Traefik chart v40.x breaking change called out in
+# the v1.36.3+k3s1 release notes (provider rename kubernetesIngressNginx ->
+# kubernetesIngressNGINX). We disable bundled Traefik anyway (see below), but not
+# inheriting the churn is still worth something.
+k3s_version: "v1.35.7+k3s1"
+
+# k3s bundles Traefik as its default ingress controller and installs it via an
+# in-cluster HelmChart CR. Disabled here so we install a chart we pin ourselves
+# (CLAUDE.md rule 2) rather than tracking whatever k3s decides to bundle.
+# servicelb (klipper-lb) is deliberately NOT disabled — it is what gives the Traefik
+# Service an external IP on a single node with no cloud load balancer.
+k3s_disable:
+  - traefik
+
+# --- Ingress: Traefik, and why NOT ingress-nginx --------------------------------
+# ingress-nginx (kubernetes/ingress-nginx, the SIG Network one) was RETIRED in
+# March 2026. Per the Kubernetes Steering and Security Response Committees,
+# https://www.kubernetes.io/blog/2026/01/29/ingress-nginx-statement/ :
+#   "There will be no more releases for bug fixes, security patches, or any updates
+#    of any kind after the project is retired."
+#   "choosing to remain with Ingress NGINX after its retirement leaves you and your
+#    users vulnerable to attack."
+# The repository is archived and read-only. Pinning an archived, unpatched,
+# internet-facing controller in front of Rancher — which holds cluster-admin
+# credentials for the entire fleet — would be exactly backwards. Not used here.
+#
+# (Note for future readers: F5's nginxinc/kubernetes-ingress is a DIFFERENT codebase
+# and is not affected by that retirement. It is also not a drop-in replacement —
+# different config surface — so it was not treated as one.)
+#
+# Traefik chart 41.2.0 -> appVersion v3.7.10, kubeVersion ">=1.25.0-0", published
+# 2026-08-07. Verified against https://helm.traefik.io/traefik/index.yaml on
+# 2026-08-17. Actively maintained, and satisfies rule 2 the same way ingress-nginx
+# would have: explicitly pinned, installed by us, not bundled.
+traefik_chart_version: "41.2.0"
+traefik_helm_repo_name: "traefik"
+traefik_helm_repo_url: "https://helm.traefik.io/traefik"
+traefik_namespace: "traefik"
+# IngressClass name the Traefik chart creates; consumed by Rancher's
+# letsEncrypt.ingress.class below and by the cert-manager HTTP-01 solver Ingress.
+traefik_ingress_class: "traefik"
+
+# --- cert-manager ---------------------------------------------------------------
+# v1.21.1, verified 2026-08-17 against https://cert-manager.io/docs/releases/ —
+# cert-manager 1.21 supports Kubernetes 1.33 -> 1.36, which covers our k3s 1.35.7.
+#
+# Deliberately NOT taken from Rancher's own docs. Rancher's "Upgrading Cert-Manager"
+# page still reads "Rancher is compatible with the API version cert-manager.io/v1
+# and was last tested with cert-manager version v1.13.1" and elsewhere recommends
+# "1.6.2 and 1.7.1" over versions reaching EOL in *March 2022*. That page is stale;
+# cert-manager's own support table is the binding constraint and is current.
+# The cert-manager.io/v1 API compatibility statement does still hold — that is the
+# part of Rancher's guidance that matters, and v1 is what 1.21.x serves.
+#
+# Installed from the OCI registry, which cert-manager's install docs now call the
+# source of truth: "OCI Helm charts are the source of truth and are published
+# immediately upon release" (https://cert-manager.io/docs/installation/helm/).
+cert_manager_chart_version: "v1.21.1"
+cert_manager_chart_ref: "oci://quay.io/jetstack/charts/cert-manager"
+cert_manager_namespace: "cert-manager"
+
+# --- Helm CLI -------------------------------------------------------------------
+# v3.21.4 is the newest stable Helm 3 (2026-08-14, https://github.com/helm/helm/releases).
+# Pinned to the v3 line on purpose: the Rancher, cert-manager and Traefik charts are
+# all Helm 3 charts and Rancher documents a Helm 3 requirement. The releases page now
+# carries a "Helm v3 is approaching end-of-life, please update to Helm v4" notice —
+# tracked as a future migration, NOT taken now, because moving the chart tooling to
+# an untested major version at the same time as standing up Rancher would confuse two
+# independent failure modes. Revisit once Rancher documents Helm 4 support.
+helm_version: "v3.21.4"
+
+# --- Rancher install parameters -------------------------------------------------
+# Hostname derives from the mgmt node's real IP in the Terraform-generated inventory
+# rather than being hardcoded, same pattern as rke2_tls_san in all.yml, so it cannot
+# drift from the actual address if the instance is ever rebuilt.
+rancher_hostname: "rancher.{{ hostvars[groups['mgmt'][0]].ansible_host }}.sslip.io"
+rancher_namespace: "cattle-system"
+
+# Single node — the chart defaults to replicas: 3, which would leave 2 pods pending
+# forever on a one-node cluster.
+rancher_replicas: 1
+
+# ingress.tls.source accepts "rancher" (self-signed via cert-manager), "letsEncrypt",
+# or "secret" — per chart/values.yaml at the v2.15.0 tag.
+rancher_tls_source: "letsEncrypt"
+
+# letsEncrypt.environment is "production" or "staging" (chart default: production).
+#
+# READ THIS BEFORE SWITCHING TO PRODUCTION. sslip.io is NOT on the Public Suffix
+# List, so Let's Encrypt treats the whole of sslip.io as ONE registered domain and
+# every sslip.io user on the internet shares a single weekly certificate quota.
+# That quota has been exhausted in the past — https://github.com/cunnie/sslip.io/issues/108
+# ("Let's Encrypt Rate Limit Exhausted for sslip.io"). Issuance for our hostname can
+# therefore fail for reasons that have nothing to do with our config.
+#
+# So: staging first to prove the whole path (DNS -> ingress -> HTTP-01 -> cert), then
+# flip to production once. Staging certs are untrusted by browsers — expect a warning
+# and treat it as expected output, not a fault. If production is rate-limited, the
+# fallback is rancher_tls_source: "rancher" (self-signed), which needs no external CA.
+rancher_letsencrypt_environment: "staging"
+rancher_letsencrypt_ingress_class: "{{ traefik_ingress_class }}"
+
+# Let's Encrypt requires a contact email. Not a credential, but still not hardcoded
+# here — supply with -e rancher_letsencrypt_email=... or set it in a local var file.
+# The rancher role asserts it is set rather than letting the chart fail obscurely.
+
+# NO CREDENTIALS IN THIS REPO (CLAUDE.md). bootstrapPassword is read from the
+# RANCHER_BOOTSTRAP_PASSWORD environment variable at run time. Override with
+# -e rancher_bootstrap_password=... only if you know the value will not land in a
+# shell history file. The rancher role asserts this is set and non-trivial.
+rancher_bootstrap_password: "{{ lookup('env', 'RANCHER_BOOTSTRAP_PASSWORD') }}"

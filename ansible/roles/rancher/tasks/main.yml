@@ -1,0 +1,201 @@
+---
+# Rancher Manager on the single-node k3s cluster, plus the two things it depends on:
+# a pinned ingress controller (Traefik) and cert-manager.
+#
+# Every chart version is pinned in ansible/inventory/group_vars/mgmt.yml with the
+# source and date it was verified against. Install sequence and flags verified
+# 2026-08-17 against:
+#   https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/install-upgrade-on-a-kubernetes-cluster/
+#   https://cert-manager.io/docs/installation/helm/
+#   chart/values.yaml at https://github.com/rancher/rancher/tree/v2.15.0
+#
+# Order matters and is not arbitrary: Traefik must exist before Rancher, because the
+# Let's Encrypt HTTP-01 challenge is served through an Ingress and there has to be a
+# controller to serve it. cert-manager must exist before Rancher because the Rancher
+# chart creates Issuer/Certificate resources at install time and they need the CRDs
+# and a running webhook to be admitted.
+
+# --- Preflight: fail on missing inputs before touching the cluster ---------------
+# These are asserted up front rather than left to the chart, because a missing
+# bootstrapPassword produces a Rancher install that comes up with a randomly
+# generated password nobody recorded — recoverable, but only via a kubectl dance
+# that is easy to get wrong under time pressure.
+
+- name: Assert a Rancher bootstrap password was supplied
+  assert:
+    that:
+      - rancher_bootstrap_password is defined
+      - rancher_bootstrap_password | length >= 12
+    fail_msg: >-
+      rancher_bootstrap_password is empty or shorter than 12 characters. It is read
+      from the RANCHER_BOOTSTRAP_PASSWORD environment variable — export it before
+      running this play:
+        export RANCHER_BOOTSTRAP_PASSWORD='...'
+      Do not put the value in this repo, in a .yml file, or on the command line where
+      it lands in shell history (CLAUDE.md: no credentials in this repo, ever).
+      Rancher itself rejects passwords under 12 characters, so this fails early
+      rather than after the chart is halfway installed.
+  no_log: true
+
+- name: Assert a Let's Encrypt contact email was supplied
+  assert:
+    that:
+      - rancher_letsencrypt_email is defined
+      - rancher_letsencrypt_email | length > 0
+    fail_msg: >-
+      rancher_letsencrypt_email is not set. Let's Encrypt requires a contact address
+      for expiry notices. Pass it with -e rancher_letsencrypt_email=you@example.org.
+  when: rancher_tls_source == "letsEncrypt"
+
+# --- Helm CLI -------------------------------------------------------------------
+
+- name: Check installed Helm version
+  command: helm version --short --client
+  register: helm_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install pinned Helm CLI
+  unarchive:
+    src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/linux-amd64/helm"
+  when: helm_version not in (helm_installed.stdout | default(''))
+
+- name: Place Helm binary on PATH
+  copy:
+    src: /tmp/linux-amd64/helm
+    dest: /usr/local/bin/helm
+    remote_src: true
+    mode: "0755"
+  when: helm_version not in (helm_installed.stdout | default(''))
+
+# --- Ingress controller: pinned Traefik -----------------------------------------
+# NOT ingress-nginx: that project was retired in March 2026 and is archived and
+# unpatched. See the long note in inventory/group_vars/mgmt.yml.
+
+- name: Add Traefik Helm repository
+  command: >-
+    helm repo add {{ traefik_helm_repo_name }} {{ traefik_helm_repo_url }}
+      --force-update
+  changed_when: false
+
+- name: Add Rancher Helm repository ({{ rancher_helm_repo_name }})
+  command: >-
+    helm repo add {{ rancher_helm_repo_name }} {{ rancher_helm_repo_url }}
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  command: helm repo update
+  changed_when: false
+
+- name: Install Traefik ingress controller (pinned)
+  command: >-
+    helm upgrade --install traefik {{ traefik_helm_repo_name }}/traefik
+      --namespace {{ traefik_namespace }}
+      --create-namespace
+      --version {{ traefik_chart_version }}
+      --wait --timeout 10m
+  register: traefik_install
+  changed_when: "'has been upgraded' in traefik_install.stdout
+                 or 'has been installed' in traefik_install.stdout"
+
+# The Service must actually get an external address or the HTTP-01 challenge has
+# nowhere to land. On k3s this comes from servicelb/klipper-lb, which is why the
+# k3s-server role disables only Traefik and leaves servicelb alone.
+- name: Wait for the Traefik Service to receive an external address
+  command: >-
+    k3s kubectl get svc traefik -n {{ traefik_namespace }}
+      -o jsonpath={.status.loadBalancer.ingress[0].ip}
+  register: traefik_lb_ip
+  changed_when: false
+  retries: 20
+  delay: 15
+  until: traefik_lb_ip.stdout | trim | length > 0
+
+# --- cert-manager ---------------------------------------------------------------
+# Installed from the OCI registry: cert-manager's docs call OCI "the source of truth",
+# published immediately on release, so no `helm repo add` is needed here.
+# crds.enabled=true is the current flag name — the old installCRDs=true is superseded.
+
+- name: Install cert-manager (pinned, with CRDs)
+  command: >-
+    helm upgrade --install cert-manager {{ cert_manager_chart_ref }}
+      --namespace {{ cert_manager_namespace }}
+      --create-namespace
+      --version {{ cert_manager_chart_version }}
+      --set crds.enabled=true
+      --wait --timeout 10m
+  register: cert_manager_install
+  changed_when: "'has been upgraded' in cert_manager_install.stdout
+                 or 'has been installed' in cert_manager_install.stdout"
+
+# `helm --wait` returns when the Deployments are Available, which is NOT the same as
+# the validating webhook being able to serve. Installing Rancher in that gap fails
+# with "failed calling webhook ... connection refused" — a confusing error that looks
+# like a cert-manager fault rather than a race. Wait for the webhook explicitly.
+- name: Wait for the cert-manager webhook to be ready
+  command: >-
+    k3s kubectl wait --for=condition=Available
+      deployment/cert-manager-webhook
+      -n {{ cert_manager_namespace }}
+      --timeout=300s
+  register: cert_manager_webhook
+  changed_when: false
+  retries: 5
+  delay: 15
+  until: cert_manager_webhook.rc == 0
+
+# --- Rancher --------------------------------------------------------------------
+
+- name: Install Rancher Manager (pinned)
+  command: >-
+    helm upgrade --install rancher {{ rancher_helm_repo_name }}/rancher
+      --namespace {{ rancher_namespace }}
+      --create-namespace
+      --version {{ rancher_chart_version }}
+      --set hostname={{ rancher_hostname }}
+      --set replicas={{ rancher_replicas }}
+      --set bootstrapPassword={{ rancher_bootstrap_password }}
+      --set ingress.tls.source={{ rancher_tls_source }}
+      --set letsEncrypt.email={{ rancher_letsencrypt_email }}
+      --set letsEncrypt.environment={{ rancher_letsencrypt_environment }}
+      --set letsEncrypt.ingress.class={{ rancher_letsencrypt_ingress_class }}
+      --wait --timeout 15m
+  register: rancher_install
+  changed_when: "'has been upgraded' in rancher_install.stdout
+                 or 'has been installed' in rancher_install.stdout"
+  no_log: true
+
+- name: Wait for the Rancher deployment to roll out
+  command: >-
+    k3s kubectl -n {{ rancher_namespace }} rollout status deploy/rancher
+      --timeout=600s
+  register: rancher_rollout
+  changed_when: false
+
+# Certificate issuance is asynchronous and happens after the pods are up. Reported
+# rather than asserted: on the Let's Encrypt *staging* environment a Ready=True cert
+# is still browser-untrusted, and on production it can legitimately take a few
+# minutes — or fail for the sslip.io rate-limit reason documented in mgmt.yml, which
+# is not a fault in this configuration and should not fail the play.
+- name: Check Rancher TLS certificate status
+  command: >-
+    k3s kubectl get certificate -n {{ rancher_namespace }}
+      -o custom-columns=NAME:.metadata.name,READY:.status.conditions[0].status,ISSUER:.spec.issuerRef.name
+      --no-headers
+  register: rancher_cert_status
+  changed_when: false
+  failed_when: false
+
+- name: Report Rancher endpoint and certificate status
+  debug:
+    msg:
+      - "Rancher URL:  https://{{ rancher_hostname }}"
+      - "Chart:        rancher {{ rancher_chart_version }} ({{ rancher_helm_repo_name }})"
+      - "TLS source:   {{ rancher_tls_source }} (letsEncrypt environment: {{ rancher_letsencrypt_environment }})"
+      - "Ingress:      Traefik chart {{ traefik_chart_version }} at {{ traefik_lb_ip.stdout | trim }}"
+      - "Certificates: {{ rancher_cert_status.stdout_lines | default(['(none reported yet)']) }}"
+      - "Bootstrap password: the value of $RANCHER_BOOTSTRAP_PASSWORD (not printed)."

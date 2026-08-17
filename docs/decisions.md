@@ -1248,3 +1248,165 @@ real variables against the example inventory (`-c local`, no host contact):
   `hardening_cilium_*_ports` remain anywhere in the repo.
 
 **Nothing provisioned, no playbook run, no commits.**
+
+---
+
+## 17. Rancher Manager on routa-mgmt: the chart's `kubeVersion` cap drives every other version (2026-08-17)
+
+Scaffolded k3s + cert-manager + Rancher for the management node. Nothing run against
+the node yet — this section records the version decisions and why, per CLAUDE.md
+rule 1 (docs before syntax) and rule 2 (pin everything, with provenance).
+
+### 17.1 The constraint that decided it
+
+The Rancher Helm chart carries a hard `kubeVersion` cap, and it differs by channel.
+Read verbatim from the published chart indexes rather than from docs prose:
+
+| Chart | Channel | `kubeVersion` | Certified downstream k8s |
+|---|---|---|---|
+| 2.14.3 | `server-charts/stable` (index gen 2026-06-29) | `< 1.36.0-0` | 1.33 – 1.35 |
+| 2.15.0 | `server-charts/latest` (index gen 2026-07-30) | `< 1.37.0-0` | 1.34 – 1.36 |
+
+Our RKE2 workload cluster is `v1.36.3+rke2r1` (Section 11). Rancher v2.15 is the
+first release to certify Kubernetes 1.36 for imported clusters — it "adds support for
+Kubernetes v1.36 while removing support for Kubernetes v1.33"
+(github.com/rancher/rancher/releases/tag/v2.15.0, released 2026-07-30). **Rancher
+2.14.x cannot import our cluster at all.** So the import requirement, not a
+preference for novelty, selects 2.15.0.
+
+**Accepted tradeoff, stated plainly:** v2.15.0 is a `.0` release, 18 days old at time
+of writing, published only to the `latest` channel, and SUSE has *not* yet published a
+support-matrix page for it — the matrix index tops out at v2.14.4 and the v2.15.0 URL
+returns HTTP 404. Choosing it over stable-channel 2.14.3 is a real risk, taken
+knowingly because the alternative is rebuilding the RKE2 cluster on 1.35.x. The
+fallback is preserved deliberately — see 17.2.
+
+### 17.2 k3s pinned to 1.35, not 1.36 — the non-obvious call
+
+The obvious move is to match the RKE2 cluster at 1.36.3 for symmetry. Rejected.
+
+The local cluster's Kubernetes version has nothing to do with which downstream
+versions Rancher can import; that range comes from the Rancher version, not from the
+k3s underneath it. Rancher 2.15.0 imports our 1.36.3 cluster regardless.
+
+What 1.35 buys is optionality: `v1.35.7+k3s1` satisfies **both** chart caps, so the
+stable-channel 2.14.x chart stays installable on this node if 2.15.0 disappoints.
+Installing k3s 1.36 would violate `< 1.36.0-0` permanently and close that door
+without rebuilding the node. Zero cost, real hedge — which is exactly what the 17.1
+risk needs. It also sidesteps the Traefik chart v40.x breaking change noted in the
+`v1.36.3+k3s1` release notes.
+
+### 17.3 Ingress: ingress-nginx is retired, so Traefik
+
+The first plan pinned ingress-nginx. That was wrong and was corrected before any code
+was written. **`kubernetes/ingress-nginx` was retired in March 2026.** Per the
+Kubernetes Steering and Security Response Committees
+(kubernetes.io/blog/2026/01/29/ingress-nginx-statement/): *"There will be no more
+releases for bug fixes, security patches, or any updates of any kind after the project
+is retired,"* and *"choosing to remain with Ingress NGINX after its retirement leaves
+you and your users vulnerable to attack."* The repo is archived and read-only.
+
+Pinning an archived, unpatched, internet-facing controller in front of Rancher — which
+holds cluster-admin credentials for the whole fleet — is the opposite of what pinning
+is for. A version pin is only a safety property if someone is still shipping fixes for
+that line.
+
+Chose **Traefik chart 41.2.0** (appVersion `v3.7.10`, `kubeVersion >=1.25.0-0`,
+published 2026-08-07). k3s's *bundled* Traefik is disabled via `disable: [traefik]`
+and we install the chart ourselves, so the version is ours to pin rather than k3s's to
+choose — the same property the ingress-nginx plan was reaching for. `servicelb` is
+deliberately left enabled: on a single node with no cloud LB, klipper-lb is what gives
+the Traefik Service an external address for the HTTP-01 challenge.
+
+*(For future readers: F5's `nginxinc/kubernetes-ingress` is a different codebase and
+is unaffected by the retirement. It is also not a drop-in replacement, and was not
+treated as one.)*
+
+### 17.4 cert-manager — and ignoring Rancher's own docs on it
+
+Pinned `v1.21.1`. cert-manager 1.21 supports Kubernetes 1.33 → 1.36
+(cert-manager.io/docs/releases), covering our k3s 1.35.7.
+
+Deliberately **not** taken from Rancher's documentation. Rancher's "Upgrading
+Cert-Manager" page still says it "was last tested with cert-manager version v1.13.1"
+and elsewhere recommends "1.6.2 and 1.7.1" over versions reaching EOL in *March 2022*.
+That page is years stale. The binding, current constraint is cert-manager's own
+support table. The one part of Rancher's guidance that does still hold is the
+`cert-manager.io/v1` API compatibility statement — and v1 is what 1.21.x serves.
+
+Installed from OCI (`oci://quay.io/jetstack/charts/cert-manager`), which cert-manager's
+install docs now call the source of truth, "published immediately upon release". CRD
+flag is `crds.enabled=true`; the older `installCRDs=true` is superseded.
+
+Helm CLI pinned at `v3.21.4` (newest v3, 2026-08-14). The releases page now warns
+"Helm v3 is approaching end-of-life. Please update to Helm v4." Not taken now:
+migrating chart tooling to a new major version *while* standing up Rancher would
+confuse two independent failure modes. Logged as future work.
+
+### 17.5 Let's Encrypt over sslip.io is a known trap
+
+`ingress.tls.source=letsEncrypt` with hostname `rancher.95.133.252.175.sslip.io`.
+
+**sslip.io is not on the Public Suffix List.** Let's Encrypt therefore treats all of
+sslip.io as ONE registered domain, and every sslip.io user on the internet shares a
+single weekly certificate quota. That quota has been exhausted before —
+github.com/cunnie/sslip.io/issues/108, "Let's Encrypt Rate Limit Exhausted for
+sslip.io". Issuance can fail for reasons entirely unrelated to our configuration.
+
+Mitigation, encoded in the vars rather than left to memory:
+`letsEncrypt.environment` defaults to **`staging`** here, so the full path (DNS →
+ingress → HTTP-01 → cert) is proven before spending a production issuance. Staging
+certs are browser-untrusted — that warning is expected output, not a fault. If
+production is rate-limited, the fallback is `ingress.tls.source=rancher` (self-signed
+via cert-manager), which needs no external CA. The cert-status task reports rather
+than asserts, precisely so a rate-limit does not fail an otherwise-correct run.
+
+### 17.6 Structure: Ansible, not gitops/
+
+`ansible/roles/k3s-server`, `ansible/roles/rancher`, `playbooks/mgmt-rancher.yml`
+targeting the existing `[mgmt]` inventory group, pins in
+`inventory/group_vars/mgmt.yml`, appended to `site.yml`.
+
+Not in `gitops/`, and the reason is not filing convenience: Argo CD delivers workloads
+*into* the RKE2 cluster, whereas Rancher *manages* clusters and must outlive the
+cluster it manages. Putting it in `gitops/` would make the management plane a tenant
+of the thing it manages.
+
+Credentials stay out of the repo (CLAUDE.md): `bootstrapPassword` is read from
+`$RANCHER_BOOTSTRAP_PASSWORD` and the role asserts it is set and ≥12 characters before
+touching the cluster, rather than letting Rancher generate a random password nobody
+recorded. The Helm task is `no_log: true`.
+
+### 17.7 Verification so far (rule 4 — render, don't syntax-check)
+
+`--syntax-check` passes, but per Section 12 that proves nothing about variables. Vars
+were rendered with `-c local` (no SSH to the node) **from the repository root, not
+from `ansible/`** — deliberately, so the check cannot pass for the cwd-dependent
+reason that produced the false green in Section 12.2. Resolved values:
+
+```
+hostname=rancher.95.133.252.175.sslip.io | k3s=v1.35.7+k3s1 | rancher_chart=2.15.0
+traefik=41.2.0 | certmgr=v1.21.1 | helm=v3.21.4 | disable=['traefik']
+tls_source=letsEncrypt | le_env=staging | le_class=traefik | admin_user=routa
+```
+
+The hostname derives from the inventory's real IP rather than being hardcoded, and
+that IP was independently confirmed against Verda's live API via the MCP server
+(`describe_vm`, see docs/ai-usage.md) — inventory and provider agree.
+
+The credential gate was tested in both directions: env unset → length 0 (assert
+fails), env set → length 16 (assert passes). A gate that has only ever been observed
+passing is not a verified gate.
+
+### 17.8 Deferred, deliberately
+
+Cluster import and SSO are **not** part of this step, by instruction — Rancher itself
+comes up and is reachable first, then each is a separately verified step. One item
+found while reading the chart values, to resolve at import time and not before:
+`agentTLSMode` defaults to `strict` on v2.9+, and Rancher's docs note that under
+strict mode a private/non-standard CA requires `privateCA=true` plus uploading the CA.
+Whether that applies to a publicly-trusted Let's Encrypt *production* cert (probably
+not) versus a *staging* cert (probably yes) is unverified — flagged rather than
+guessed.
+
+**Nothing run against routa-mgmt, no playbook executed, no commits.**

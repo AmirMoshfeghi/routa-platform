@@ -1,0 +1,79 @@
+---
+# Single-node k3s on routa-mgmt, as the substrate for Rancher Manager.
+#
+# Install script and env vars verified 2026-08-17 against https://docs.k3s.io/quick-start
+# and https://docs.k3s.io/installation/configuration (config-file form). Version pinned
+# in ansible/inventory/group_vars/mgmt.yml — see there for why 1.35 and not 1.36.
+#
+# Config goes in /etc/rancher/k3s/config.yaml rather than INSTALL_K3S_EXEC: the same
+# pattern the rke2-server role uses, and it survives re-running the installer, whereas
+# flags baked into the systemd unit by INSTALL_K3S_EXEC are easy to lose on upgrade.
+
+- name: Create k3s config directory
+  file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+- name: Template k3s server config
+  template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0600"
+
+- name: Download and run k3s install script (server)
+  shell: |
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      sh -s - server
+  args:
+    creates: /usr/local/bin/k3s
+
+- name: Enable and start k3s
+  systemd:
+    name: k3s
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the admin kubeconfig to be written
+  wait_for:
+    path: /etc/rancher/k3s/k3s.yaml
+    timeout: 300
+
+# k3s writes the kubeconfig 0600 root-owned by default. Deliberately NOT loosened
+# with --write-kubeconfig-mode=0644: this node was hardened, and world-readable
+# cluster-admin credentials would undo part of that. Every kubectl/helm task in the
+# rancher role runs with become: true and reads it as root instead.
+
+- name: Wait for the node to report Ready
+  command: >-
+    k3s kubectl wait --for=condition=Ready node --all --timeout=300s
+  register: k3s_node_ready
+  changed_when: false
+  retries: 10
+  delay: 15
+  until: k3s_node_ready.rc == 0
+
+# Guard against the single most likely silent misconfiguration: if bundled Traefik
+# were still enabled, k3s would install its own unpinned Traefik alongside the one
+# the rancher role pins, and the two would fight over ports 80/443. Assert rather
+# than hope — a failed assert here is far cheaper to read than an ingress that
+# intermittently serves the wrong backend.
+- name: Assert bundled Traefik is not running (we install a pinned one ourselves)
+  command: >-
+    k3s kubectl get deployment traefik -n kube-system --ignore-not-found -o name
+  register: k3s_bundled_traefik
+  changed_when: false
+
+- name: Fail if k3s installed its own bundled Traefik
+  assert:
+    that:
+      - k3s_bundled_traefik.stdout | trim == ""
+    fail_msg: >-
+      k3s installed its bundled Traefik into kube-system, but this build pins its own
+      Traefik chart ({{ traefik_chart_version }}) in the {{ traefik_namespace }}
+      namespace. Two ingress controllers will contend for host ports 80/443.
+      Check that `disable: [traefik]` is present in /etc/rancher/k3s/config.yaml and
+      that k3s was restarted after it was added — k3s only skips the bundled chart at
+      startup, so adding the key to a running node is not enough on its own.

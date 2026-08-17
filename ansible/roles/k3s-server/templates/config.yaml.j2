@@ -1,0 +1,26 @@
+## Managed by Ansible (roles/k3s-server) — do not edit by hand.
+##
+## k3s server config. Key names verified 2026-08-17 against
+## https://docs.k3s.io/installation/configuration — the config file takes the same
+## keys as the CLI flags with the leading dashes stripped.
+
+## Disable the bundled Traefik so we can install a version we pin ourselves.
+## See ansible/inventory/group_vars/mgmt.yml for why (ingress-nginx is retired;
+## Traefik chart {{ traefik_chart_version }} is pinned by the rancher role instead).
+##
+## servicelb is intentionally left enabled: on a single node with no cloud load
+## balancer, klipper-lb is what gives the Traefik Service an external address.
+disable:
+{% for component in k3s_disable %}
+  - {{ component }}
+{% endfor %}
+
+## TLS SANs for the k3s API server cert. The public IP is included so the fetched
+## kubeconfig works from outside the node; the Rancher hostname is included because
+## the sslip.io name resolves to this same node and may be used to reach it.
+tls-san:
+  - {{ hostvars[groups['mgmt'][0]].ansible_host }}
+  - {{ rancher_hostname }}
+
+## Single-node cluster: this node runs the control plane AND the workloads
+## (Rancher, cert-manager, Traefik). No taint, so nothing needs a toleration.
