@@ -136,18 +136,29 @@ rancher_tls_source: "letsEncrypt"
 
 # letsEncrypt.environment is "production" or "staging" (chart default: production).
 #
-# READ THIS BEFORE SWITCHING TO PRODUCTION. sslip.io is NOT on the Public Suffix
-# List, so Let's Encrypt treats the whole of sslip.io as ONE registered domain and
-# every sslip.io user on the internet shares a single weekly certificate quota.
-# That quota has been exhausted in the past — https://github.com/cunnie/sslip.io/issues/108
-# ("Let's Encrypt Rate Limit Exhausted for sslip.io"). Issuance for our hostname can
-# therefore fail for reasons that have nothing to do with our config.
+# Now "production": the full path (DNS -> ingress -> HTTP-01 -> cert) was proven on
+# staging during the first install and a production certificate has since been issued
+# and verified on the wire — see docs/decisions.md Section 18. Production is therefore
+# the steady-state default, and staging is no longer the first-run behavior.
 #
-# So: staging first to prove the whole path (DNS -> ingress -> HTTP-01 -> cert), then
-# flip to production once. Staging certs are untrusted by browsers — expect a warning
-# and treat it as expected output, not a fault. If production is rate-limited, the
-# fallback is rancher_tls_source: "rancher" (self-signed), which needs no external CA.
-rancher_letsencrypt_environment: "staging"
+# STILL TRUE, just no longer the default: sslip.io is NOT on the Public Suffix List,
+# so Let's Encrypt treats the whole of sslip.io as ONE registered domain and every
+# sslip.io user on the internet shares a single weekly certificate quota. That quota
+# has been exhausted in the past — https://github.com/cunnie/sslip.io/issues/108
+# ("Let's Encrypt Rate Limit Exhausted for sslip.io"). Issuance for our hostname can
+# still fail for reasons that have nothing to do with our config.
+#
+# So on a REBUILD, or any time the issuance path itself is in question, do the
+# one-time staging validation again before spending a production issuance:
+#   -e rancher_letsencrypt_environment=staging
+# Staging certs are untrusted by browsers — expect a warning and treat it as expected
+# output, not a fault. If production is rate-limited, the fallback is
+# rancher_tls_source: "rancher" (self-signed), which needs no external CA.
+#
+# Flipping this value alone does NOT force re-issuance: cert-manager will not re-issue
+# while a valid unexpired cert is still in tls-rancher-ingress, so a staging->production
+# change is a silent no-op until that secret is deleted (Section 18).
+rancher_letsencrypt_environment: "production"
 rancher_letsencrypt_ingress_class: "{{ traefik_ingress_class }}"
 
 # Let's Encrypt requires a contact email. Not a credential, but still not hardcoded

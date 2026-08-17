@@ -1410,3 +1410,52 @@ not) versus a *staging* cert (probably yes) is unverified — flagged rather tha
 guessed.
 
 **Nothing run against routa-mgmt, no playbook executed, no commits.**
+
+---
+
+## 18. Rancher TLS: the production cert flip that silently didn't happen (2026-08-17)
+
+Rancher came up as planned. Getting a *browser-trusted* cert onto it took one
+non-obvious debugging step, recorded here because the failure mode reported success.
+
+**Staging first, deliberately.** Installed with
+`rancher_letsencrypt_environment=staging` — sslip.io is not on the Public Suffix List,
+so all of sslip.io shares a single Let's Encrypt weekly quota (Section 17.5). The
+point was to prove DNS → ingress → HTTP-01 → cert end to end before spending a
+production issuance. It worked.
+
+**The flip that wasn't.** Re-ran the play with
+`rancher_letsencrypt_environment=production`. The play reported success and the
+`Certificate` object reported `Ready=True`. Both were true and both were misleading —
+the server was still serving the staging cert:
+
+```
+openssl s_client -connect rancher.95.133.252.175.sslip.io:443 -servername ...
+issuer=... (STAGING) Dastardly Durum YR1
+```
+
+**Root cause.** cert-manager does not re-issue while a valid, unexpired certificate
+already exists in the target secret. Changing the Issuer's ACME environment is not by
+itself a trigger for renewal. The staging cert was still well inside its validity
+window, so the production flip was a no-op for issuance — nothing failed, nothing
+retried, and `Ready=True` was reporting on the *staging* cert it already held.
+
+The general lesson, which is the reason this is written down: `Ready=True` on a
+`Certificate` answers "do I hold a valid cert?", not "do I hold the cert you just
+asked for?" Those diverge exactly when you change issuer config mid-life. Verifying
+against the object rather than the wire would have missed this indefinitely.
+
+**Fix.** Deleted the `tls-rancher-ingress` secret in `cattle-system`. Its absence
+triggered a fresh `CertificateRequest`, which went to the now-production Issuer.
+
+**One transient worth not misreading.** For roughly 30 seconds while the secret was
+absent, Traefik served its built-in self-signed placeholder (`TRAEFIK DEFAULT CERT`).
+An `openssl s_client` check landing in that window looks like a broken issuance but is
+just the gap before the new secret lands. Re-check rather than react.
+
+**Confirmed resolved on the wire, not in the API.** Production cert issued, issuer
+`CN=YR2` chaining to ISRG Root X1, expiring 2026-11-15; browser-trusted on both laptop
+and phone. This is a prerequisite for the deferred cluster import — with a publicly
+trusted cert the import can use the plain registration command instead of
+`--insecure`, so the downstream agent verifies Rancher's certificate properly rather
+than being told not to.
