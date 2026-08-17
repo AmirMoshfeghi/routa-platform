@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Do not commit the real file.
+#
+# `image` is deliberately left unset in variables.tf (no default) — resolve the
+# correct plain-Ubuntu-24.04 identifier via the Verda MCP server or
+# `verda images list` first. Do not guess.
+
+image = "" # e.g. "ubuntu-24.04" — VERIFY, do not assume
+
+# Uncomment to override locked defaults from docs/decisions.md Section 4.4:
+# location              = "FIN-03"
+# mgmt_instance_type    = "CPU.4V.16G"
+# worker_instance_type  = "CPU.8V.32G"
+# worker_count          = 3
