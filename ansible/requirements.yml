@@ -1,0 +1,6 @@
+---
+# Verified 2026-08-17 against https://github.com/ansible-collections/community.general/releases
+# Install with: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.general
+    version: "13.3.0"

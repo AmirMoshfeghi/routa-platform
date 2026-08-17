@@ -1,0 +1,21 @@
+## Managed by Ansible (roles/rke2-server) — do not edit by hand.
+## Schema verified 2026-08-17 against https://docs.rke2.io/install/quickstart and
+## https://docs.rke2.io/install/ha for the version pinned in
+## inventory/group_vars/all.yml.
+##
+## `cni` is a critical flag that must match exactly across all 3 servers (bootstrap
+## and joiners alike) or the join fails — see inventory/group_vars/all.yml for the
+## full list of critical flags.
+cni: {{ rke2_cni }}
+write-kubeconfig-mode: "0600"
+{% if rke2_tls_san | length > 0 %}
+tls-san:
+{% for san in rke2_tls_san %}
+  - {{ san }}
+{% endfor %}
+{% endif %}
+{% if rke2_server_url %}
+## This node is joining an existing etcd cluster rather than bootstrapping one.
+server: {{ rke2_server_url }}
+token: {{ rke2_join_token }}
+{% endif %}

@@ -1,0 +1,11 @@
+---
+# Fallback only, so the role is usable standalone. The real value is computed from
+# the Terraform-generated inventory in ansible/inventory/group_vars/all.yml
+# (group_vars beats role defaults) — change it there, not here.
+rke2_tls_san: []
+
+# Empty on the bootstrap node (rke2_server_init) so it initializes its own etcd
+# cluster. The rke2_server_join play overrides this (and rke2_join_token) via
+# play-level vars pulled from the bootstrap host's facts — see
+# ansible/playbooks/rke2-cluster.yml.
+rke2_server_url: ""

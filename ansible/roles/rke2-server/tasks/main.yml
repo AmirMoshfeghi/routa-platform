@@ -1,0 +1,60 @@
+---
+# Runs on all 3 RKE2 servers (bootstrap and joiners alike — install script and
+# systemd unit are identical for both; INSTALL_RKE2_TYPE defaults to "server").
+# Install script + env vars verified against https://docs.rke2.io/install/quickstart;
+# join config verified against https://docs.rke2.io/install/ha — both for the exact
+# rke2_version pinned in ansible/inventory/group_vars/all.yml.
+
+- name: Create RKE2 config directory
+  file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: "0755"
+
+- name: Template RKE2 server config
+  template:
+    src: config.yaml.j2
+    dest: /etc/rancher/rke2/config.yaml
+    mode: "0600"
+
+- name: Download and run RKE2 install script (server)
+  shell: |
+    curl -sfL https://get.rke2.io | \
+      INSTALL_RKE2_VERSION="{{ rke2_version }}" \
+      INSTALL_RKE2_CHANNEL="{{ rke2_channel }}" \
+      sh -
+  args:
+    creates: /usr/local/bin/rke2
+
+- name: Enable and start rke2-server
+  systemd:
+    name: rke2-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for kubectl symlink to exist
+  wait_for:
+    path: /var/lib/rancher/rke2/bin/kubectl
+    timeout: 300
+
+# The remaining tasks only run on the bootstrap node (rke2_server_url == ""): they
+# read back the token it generated so the rke2_server_join play can hand it to the
+# other two servers. Joiners already know the token via that play's vars and don't
+# need to re-read their own copy of the file.
+- name: Wait for node-token to exist
+  wait_for:
+    path: "{{ rke2_token_path }}"
+    timeout: 300
+  when: rke2_server_url == ""
+
+- name: Read node-token (for the other 2 servers to join with)
+  slurp:
+    src: "{{ rke2_token_path }}"
+  register: rke2_node_token_b64
+  when: rke2_server_url == ""
+
+- name: Expose token as a fact for other hosts in this play
+  set_fact:
+    rke2_join_token: "{{ rke2_node_token_b64.content | b64decode | trim }}"
+  when: rke2_server_url == ""

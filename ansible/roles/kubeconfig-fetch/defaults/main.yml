@@ -1,0 +1,3 @@
+---
+kubeconfig_fetch_remote_path: /etc/rancher/rke2/rke2.yaml
+kubeconfig_fetch_local_path: "{{ playbook_dir }}/../kubeconfig"   # gitignored

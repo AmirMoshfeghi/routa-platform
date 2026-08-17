@@ -1,0 +1,6 @@
+---
+- name: Baseline OS hardening
+  hosts: routa
+  become: true
+  roles:
+    - hardening

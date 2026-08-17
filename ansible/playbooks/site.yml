@@ -1,0 +1,6 @@
+---
+# Entry point. Run in order:
+#   ansible-playbook playbooks/site.yml
+- import_playbook: hardening.yml
+- import_playbook: rke2-cluster.yml
+- import_playbook: kubeconfig-fetch.yml

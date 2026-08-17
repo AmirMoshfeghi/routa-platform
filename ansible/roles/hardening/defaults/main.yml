@@ -1,0 +1,19 @@
+---
+# See: https://docs.verda.com/cpu-and-gpu-instances/securing-your-instance/
+hardening_allowed_tcp_ports:
+  - 22      # SSH
+  - 6443    # Kubernetes API (rke2_server only — see tasks/main.yml)
+  - 9345    # RKE2 supervisor API (rke2_server only)
+  - 2379    # etcd client (rke2_server only)
+  - 2380    # etcd peer (rke2_server only)
+  - 10250   # kubelet
+
+# TODO before first apply: Cilium needs its own ports open between cluster nodes
+# (VXLAN 8472/udp by default, health checks 4240/tcp, etc.). Fetch the current
+# Cilium firewall requirements per CLAUDE.md rule 1 and extend this list — do not
+# guess the port set from memory.
+hardening_cilium_tcp_ports: []
+hardening_cilium_udp_ports: []
+
+hardening_disable_password_auth: true
+hardening_unattended_upgrades: true

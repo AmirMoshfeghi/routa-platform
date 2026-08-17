@@ -1,0 +1,38 @@
+---
+# Runs against rke2_server_init (see playbooks/kubeconfig-fetch.yml). RKE2 generates
+# a kubeconfig pointing at 127.0.0.1, which is only usable on the node itself;
+# rewrite it to the cluster's external API endpoint so the file works from a laptop,
+# from Argo CD, and for the Rancher import.
+#
+# The replacement address MUST be one of the cert's SANs or every client hits an
+# x509 "certificate is valid for ..." error. Both this and the SAN list derive from
+# rke2_api_endpoint_host in inventory/group_vars/all.yml, precisely so they cannot
+# drift apart.
+
+- name: Fetch generated kubeconfig from the RKE2 bootstrap server
+  fetch:
+    src: "{{ kubeconfig_fetch_remote_path }}"
+    dest: "{{ kubeconfig_fetch_local_path }}"
+    flat: true
+    mode: "0600"
+
+- name: Assert the target endpoint is covered by the cert SANs
+  delegate_to: localhost
+  become: false
+  assert:
+    that:
+      - rke2_api_endpoint_host in rke2_tls_san
+    fail_msg: >-
+      rke2_api_endpoint_host ({{ rke2_api_endpoint_host }}) is not in rke2_tls_san
+      ({{ rke2_tls_san }}). The rewritten kubeconfig would fail x509 validation.
+      Fix the SAN list in inventory/group_vars/all.yml and reinstall the servers —
+      SANs are baked in at cluster creation and cannot be added to a running
+      cluster without regenerating the serving cert.
+
+- name: Point kubeconfig at the cluster API endpoint instead of 127.0.0.1
+  delegate_to: localhost
+  become: false
+  replace:
+    path: "{{ kubeconfig_fetch_local_path }}"
+    regexp: 'https://127\.0\.0\.1:6443'
+    replace: "{{ rke2_api_endpoint }}"
