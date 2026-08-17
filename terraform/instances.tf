@@ -1,7 +1,8 @@
 # Resource schema verified 2026-08-17 against:
 #   https://github.com/verda-cloud/terraform-provider-verda/blob/main/docs/resources/instance.md
-# (provider v1.1.2 — see versions.tf). `image` has no default: resolve the correct
-# plain-Ubuntu identifier via the Verda MCP server / `verda images list` before apply.
+# (provider v1.1.2 — see versions.tf). `image` defaults to the plain (non-CUDA)
+# Ubuntu 24.04 slug resolved via `verda images` — see variables.tf for the full
+# candidate list and why it was picked.
 
 resource "verda_instance" "mgmt" {
   instance_type = var.mgmt_instance_type

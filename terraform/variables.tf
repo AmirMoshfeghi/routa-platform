@@ -7,13 +7,30 @@ variable "location" {
 variable "image" {
   description = <<-EOT
     Verda OS image identifier for CPU-only instances (plain Ubuntu 24.04, no CUDA).
-    UNRESOLVED as of scaffolding time — decisions.md Section 8 step 6 flags that the
-    documented examples are all CUDA/GPU variants (e.g. ubuntu-24.04-cuda-13.0-open-docker).
-    Resolve via the Verda MCP server or `verda images list` before the first apply;
-    do not guess an identifier here. Left with no default on purpose so a plan/apply
-    fails loudly instead of silently provisioning the wrong image.
+    Resolved 2026-08-17 via `verda images --type CPU.8V.32G -o json` (cross-checked
+    against `--type CPU.4V.16G` — same image compatible with both). The `image_type`
+    field (not the `id` UUID) is what the verda_instance resource's `image` argument
+    expects — see terraform/instances.tf's schema-verification comment.
+    Candidates returned for Ubuntu 24.04, all under category "ubuntu":
+      - ubuntu-24.04-cuda-13.0-open-docker  — CUDA 13.0 Open + Docker
+      - ubuntu-24.04-cuda-13.0-open         — CUDA 13.0 Open
+      - ubuntu-24.04-cuda-12.8-open-docker  — CUDA 12.8 Open + Docker (is_default: true)
+      - ubuntu-24.04-cuda-12.8-open         — CUDA 12.8 Open
+      - ubuntu-24.04-cuda-12.6-docker       — CUDA 12.6 + Docker
+      - ubuntu-24.04-cuda-12.6              — CUDA 12.6
+      - ubuntu-24.04                        — "Minimal Image", no CUDA  <- picked
+    Picked ubuntu-24.04: it's the only non-CUDA Ubuntu 24.04 entry. The others all
+    ship NVIDIA CUDA userspace and drivers meant for GPU instances — dead weight and
+    attack surface on the CPU-only mgmt/RKE2 nodes here, which install their own
+    stack (k3s/RKE2, Cilium) via Ansible regardless. `is_default: true` on the
+    12.8-open-docker variant is Verda's default for GPU workloads, not a signal to
+    use it here.
+    The image catalog has no --location flag (unlike instance-type stock, which is
+    region-scoped and re-checked before apply per docs/decisions.md Section 4.1) —
+    it appears to be global, not per-region.
   EOT
   type        = string
+  default     = "ubuntu-24.04"
 }
 
 variable "ssh_public_key_path" {

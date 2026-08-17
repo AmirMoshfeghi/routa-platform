@@ -1,10 +1,10 @@
 # Copy to terraform.tfvars (gitignored) and fill in. Do not commit the real file.
 #
-# `image` is deliberately left unset in variables.tf (no default) — resolve the
-# correct plain-Ubuntu-24.04 identifier via the Verda MCP server or
-# `verda images list` first. Do not guess.
+# `image` now has a default in variables.tf ("ubuntu-24.04", resolved 2026-08-17 —
+# see that file's comment for the full candidate list and rationale). Override here
+# only if you want a different image; re-verify via `verda images` first, don't guess.
 
-image = "" # e.g. "ubuntu-24.04" — VERIFY, do not assume
+# image = "ubuntu-24.04"
 
 # Uncomment to override locked defaults from docs/decisions.md Section 4.4:
 # location              = "FIN-03"

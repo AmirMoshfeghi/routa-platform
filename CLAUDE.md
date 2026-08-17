@@ -29,9 +29,10 @@ regional availability, image identifiers, pricing — query the `verda` MCP serv
 (wired up in `.mcp.json`, backed by `verda mcp serve`) rather than assuming or
 recalling from training data. Verda's on-demand inventory genuinely changes between
 sessions (see `docs/decisions.md` Section 4.1) — a value that was true yesterday may
-not be true now. This applies especially to `terraform/variables.tf`'s `image`
-variable, which is deliberately left unset because the correct plain-Ubuntu-24.04
-identifier has not yet been confirmed.
+not be true now. `terraform/variables.tf`'s `image` variable is a worked example of
+this: its default (`ubuntu-24.04`) was resolved via `verda images`, not guessed —
+re-verify against the live catalog rather than trusting that default indefinitely,
+since Verda's image catalog can change.
 
 ## Repository layout
 

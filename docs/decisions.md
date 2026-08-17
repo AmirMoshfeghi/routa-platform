@@ -877,3 +877,63 @@ three-element list, identical across all three servers; the bootstrap node emits
 `server:` key; both joiners emit `server: https://<cp-1>:9345`.
 
 **Still scaffold-only.** Nothing provisioned, no commits made.
+
+---
+
+## 13. CPU image identifier resolved (2026-08-17)
+
+The `image` variable flagged as unresolved since Section 8 (step 6) and reiterated
+in Sections 10 and 12 is now resolved. Not changed retroactively in those earlier
+entries — they're an accurate record of what was known at the time.
+
+**Method:** the Verda MCP server declared in `.mcp.json` (`verda mcp serve`) is not
+actually connected in this Claude Code session — it never surfaced when searching
+available tools. Fell back to the CLI directly (`verda images --type CPU.8V.32G -o
+json`), which is what the MCP server wraps per docs.verda.com/cli/mcp, so the data
+source is the same either way. Worth a line for the report: the MCP-first instruction
+in `CLAUDE.md` is a preference for freshness over training data, not a hard
+dependency on the MCP transport specifically — the CLI is an equally-live fallback.
+
+**Cross-checked against both instance types actually used** (`CPU.8V.32G` for
+cluster nodes, `CPU.4V.16G` for mgmt) — same image compatible with both, so a single
+shared `var.image` (as already structured in `instances.tf`) is valid.
+
+**Candidates returned for Ubuntu 24.04** (all `category: ubuntu`):
+
+| `image_type` | Notes |
+|---|---|
+| `ubuntu-24.04-cuda-13.0-open-docker` | CUDA 13.0 Open + Docker |
+| `ubuntu-24.04-cuda-13.0-open` | CUDA 13.0 Open |
+| `ubuntu-24.04-cuda-12.8-open-docker` | CUDA 12.8 Open + Docker — `is_default: true` |
+| `ubuntu-24.04-cuda-12.8-open` | CUDA 12.8 Open |
+| `ubuntu-24.04-cuda-12.6-docker` | CUDA 12.6 + Docker |
+| `ubuntu-24.04-cuda-12.6` | CUDA 12.6 |
+| **`ubuntu-24.04`** | **"Minimal Image", no CUDA — picked** |
+
+**Picked `ubuntu-24.04`:** the only non-CUDA Ubuntu 24.04 entry in the catalog.
+Every other variant ships NVIDIA CUDA userspace and drivers sized for GPU workloads —
+unnecessary disk, boot time, and attack surface on CPU-only nodes that install their
+own stack (RKE2, Cilium, k3s) via Ansible regardless. `is_default: true` on the
+12.8-open-docker variant is Verda's default for their GPU-oriented console flow, not
+a signal relevant to a CPU build — worth noting since blindly trusting `is_default`
+would have picked the wrong image here.
+
+**Confirmed the Terraform resource wants the slug, not the UUID.** `verda images`
+returns both an opaque `id` (UUID) and an `image_type` (the human-readable slug, e.g.
+`ubuntu-24.04`). The provider's own example usage (`docs/resources/instance.md`,
+already verified in Section 10 while writing `instances.tf`) sets `image =
+"ubuntu-24.04-cuda-12.8-open-docker"` — a slug, not a UUID — so `image_type` is the
+correct field.
+
+**One catalog-scope observation:** `verda images` has no `--location` flag, unlike
+instance-type stock (Section 4.1), which is genuinely region-scoped and re-checked
+immediately before every apply. The image catalog appears to be global rather than
+per-region. Not re-verified per-region for that reason — flagging the distinction so
+a future reader doesn't assume the same "re-check before apply" discipline applies
+here for the same reason it does to instance types.
+
+**Set as the default** for `variables.tf`'s `image` variable (was previously
+required with no default, by design, so `plan`/`apply` would fail loudly rather than
+guess). `terraform.tfvars.example`, `CLAUDE.md`, and `README.md` updated to match —
+none of them still describe this as open. Still scaffold-only: no `terraform plan`
+or `apply` run, nothing committed.

@@ -55,7 +55,7 @@ verda doctor   # should be all green before doing anything else
 ```bash
 # 1. Provision
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in `image` — see the TODO inside
+cp terraform.tfvars.example terraform.tfvars   # image defaults to ubuntu-24.04
 terraform init
 terraform plan
 terraform apply   # writes ansible/inventory/hosts.ini on success
