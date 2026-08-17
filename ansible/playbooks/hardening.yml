@@ -1,6 +1,18 @@
 ---
-- name: Baseline OS hardening
+# Phase 1 of two. Connects as root — the only identity Verda's minimal ubuntu-24.04
+# image seeds an SSH key for (docs/decisions.md Section 15) — and hands over to a
+# non-root admin user before disabling root login. Every later play is phase 2 and
+# connects as that admin user.
+#
+# Re-running after a successful first run: root SSH is gone by then, so pass
+#   -e hardening_connect_as=routa
+# to connect as the admin user instead. Left as an explicit override rather than
+# auto-probing both identities — a silent fallback would mask a genuinely broken
+# key install as "worked fine, used the other user".
+- name: Baseline OS hardening (bootstrap connection as root)
   hosts: routa
   become: true
+  vars:
+    ansible_user: "{{ hardening_connect_as | default(routa_bootstrap_user) }}"
   roles:
     - hardening

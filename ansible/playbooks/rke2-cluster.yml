@@ -2,10 +2,16 @@
 # 3-server RKE2 HA control plane (embedded etcd quorum). See
 # ansible/inventory/group_vars/all.yml and roles/rke2-server for the config keys,
 # verified against https://docs.rke2.io/install/ha.
+#
+# Phase 2: connects as routa_admin_user, not root — hardening.yml created that user
+# and disabled root SSH login. Set via play vars because those (precedence 12) beat
+# the inventory's ansible_user (3-6); see group_vars/all.yml for why not remote_user.
 
 - name: Bootstrap the first RKE2 server (initializes the etcd cluster)
   hosts: rke2_server_init
   become: true
+  vars:
+    ansible_user: "{{ routa_admin_user }}"
   roles:
     - rke2-server
 
@@ -13,6 +19,7 @@
   hosts: rke2_server_join
   become: true
   vars:
+    ansible_user: "{{ routa_admin_user }}"
     rke2_server_url: "https://{{ hostvars[groups['rke2_server_init'][0]].ansible_host }}:9345"
     rke2_join_token: "{{ hostvars[groups['rke2_server_init'][0]].rke2_join_token }}"
   roles:

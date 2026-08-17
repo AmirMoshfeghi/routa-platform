@@ -1,6 +1,13 @@
 ---
-# Verified 2026-08-17 against https://github.com/ansible-collections/community.general/releases
+# Verified 2026-08-17 against:
+#   https://github.com/ansible-collections/community.general/releases  (13.3.0)
+#   https://github.com/ansible-collections/ansible.posix/releases      (2.2.2)
 # Install with: ansible-galaxy collection install -r requirements.yml
 collections:
+  # community.general.ufw — firewall rules in roles/hardening
   - name: community.general
     version: "13.3.0"
+  # ansible.posix.authorized_key — installs the admin user's key in roles/hardening.
+  # authorized_key is not in ansible-core; it lives in this collection.
+  - name: ansible.posix
+    version: "2.2.2"

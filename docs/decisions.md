@@ -1012,3 +1012,220 @@ faking it would cost more time than the fallback it automates.
 `image` variable's provenance note now covering `CPU.16V.64G`),
 `terraform/terraform.tfvars.example`. No `plan` or `apply` run — the replace plan is
 to be reviewed by hand first.
+
+---
+
+## 15. SSH identity: Verda's minimal image seeds root, not `ubuntu` — and the root→admin handover (2026-08-17)
+
+**Finding.** Verda's minimal `ubuntu-24.04` image (the one resolved in Section 13)
+seeds the SSH key to **`root`**, not to an `ubuntu` user. Confirmed empirically:
+`ssh root@<node>` succeeds, `ssh ubuntu@<node>` returns `Permission denied
+(publickey)`. Key injection is working correctly — it is just on a different account
+than assumed.
+
+**Why the assumption was there.** `terraform/templates/inventory.tpl` emitted
+`ansible_user=ubuntu`, carried over from the near-universal convention on
+AWS/GCP/Azure Ubuntu cloud images, which ship cloud-init configured with an `ubuntu`
+sudo user and deliberately no root SSH. Verda's image is *minimal* — it does not.
+This is a good example of a convention so widespread it reads as a property of
+Ubuntu itself rather than of the image builder, and it was never verified against
+Verda specifically. Nothing in Section 13's image-resolution work would have caught
+it: `verda images` reports the image, not the account it provisions.
+
+**Change 1 — bootstrap as root.** `inventory.tpl` (and the `.example` mirror) now
+emit `ansible_user=root`. The rendered `hosts.ini` is Terraform-generated, so the
+fix belongs in the template; editing the rendered file would be undone by the next
+`terraform apply`.
+
+**Change 2 — don't just run as root; hand over to an admin user.** Connecting as
+root and leaving it that way would trade a broken assumption for a worse posture.
+The `hardening` role now, in this order:
+
+1. creates a non-root admin user (`routa`) with `sudo` group membership,
+2. installs the same assignment public key for it,
+3. grants passwordless sudo (`/etc/sudoers.d/90-routa`, written with
+   `validate: visudo -cf %s` so a malformed entry is rejected before it lands),
+4. **verifies** the admin user can log in *and* escalate,
+5. only then disables root SSH login and password authentication.
+
+**Step 4 is the point of the whole design.** The role's last act is to remove the
+only access path it currently has. If the key install or the sudoers entry were
+silently wrong, disabling root login would strand a node with no way back in — a
+provider-console rebuild, not a re-run. So before the lockdown tasks, a probe task
+connects *as the admin user* and escalates to root, and an `assert` gates the
+lockdown on that succeeding. The probe uses task-level `vars: ansible_user`
+(precedence 17), which outranks the play's root identity (12). Passwordless sudo is
+not laziness here: the admin account is key-only with no password at all, so a sudo
+prompt would be unsatisfiable and would hang every `become: true` task in the plays
+that follow.
+
+**Change 3 — two-phase connection.** Phase 1 (`hardening.yml`) connects as root;
+phase 2 (`rke2-cluster.yml`, `kubeconfig-fetch.yml`) connects as `routa`.
+
+**The pattern, and the documented reason for it.** The Ansible docs are explicit
+that play `vars:` (precedence 12) beat inventory group vars (3–6), so setting
+`ansible_user` in each play's `vars:` block reliably overrides the inventory's
+`ansible_user=root`. The docs are conspicuously **silent** on how the `remote_user:`
+play keyword ranks against the `ansible_user` variable — the connection-details page
+lists both as ways to set the login user and defers to a precedence page that does
+not resolve the pair. Choosing an SSH identity by relying on an interaction the
+documentation does not define is how a hardening run locks you out of four hosts, so
+`remote_user` is deliberately unused here. Verified empirically rather than trusting
+the reading: with `ansible_user=root` in the inventory, phase 1 resolves to `root`,
+phase 2 resolves to `routa`, and the task-level probe override resolves to `routa`.
+
+**Re-run behaviour, handled explicitly rather than silently.** After a successful
+first run root SSH is gone, so re-running `site.yml` cannot connect as root. The
+hardening play takes `-e hardening_connect_as=routa` for that case. An automatic
+"try root, fall back to admin" probe was considered and rejected: it would make a
+genuinely broken key install look like a clean run that happened to use the other
+identity, which is precisely the failure the assert in step 4 exists to surface.
+
+**New dependency:** `ansible.posix` 2.2.2 (pinned, verified against the collection's
+releases page) for `ansible.posix.authorized_key` — that module is not in
+ansible-core. Added to `requirements.yml` alongside `community.general`, with a note
+on which role uses each.
+
+**Verified without running the playbook**, per the Section 12.3 lesson that
+`--syntax-check` proves nothing about variable resolution: syntax check passes; both
+collections resolve at the pinned versions; `ansible_user` resolves correctly in all
+four cases above; `routa_ssh_public_key_path` expands `~` and the file lookup reads
+the real key; and `kubeconfig-fetch`'s `delegate_to: localhost` tasks still execute
+as the local user rather than being dragged onto the new `ansible_user`. That last
+check also caught a portability wart in the probe (`id --user --name` is GNU-only),
+now `id -un`.
+
+**Still open — the better answer, deferred.** Bootstrapping as root at all is
+avoidable: Verda's Terraform provider exposes a `verda_startup_script` resource
+(confirmed in the provider docs while writing `instances.tf`), so the admin user and
+its key could be seeded by cloud-init at provision time and root SSH disabled before
+Ansible ever connects. That removes the two-phase connection, the re-run override,
+and the window where root is reachable over the network. Not done now because it
+moves node identity into Terraform and would need its own verification pass against
+the provider's startup-script semantics; recorded as a concrete improvement for the
+report rather than left implicit.
+
+**Nothing provisioned, no playbook run, no commits.**
+
+---
+
+## 16. Firewall port set: Cilium/RKE2 ports resolved, and split public vs node-to-node (2026-08-17)
+
+Three defects in the hardening role's firewall, found in review before the playbook
+ever ran. All three would have surfaced as "the cluster is up but pods on different
+nodes can't talk to each other" — the worst class of bug to debug from inside a
+half-working cluster.
+
+### 16.1 The defects
+
+1. **`hardening_cilium_tcp_ports` / `hardening_cilium_udp_ports` were empty**, left as
+   a TODO in Section 10 with an explicit "do not guess the port set from memory" note.
+   Cilium's VXLAN tunnel would have been silently blocked by the default-deny policy.
+2. **No UDP task existed at all.** The role looped only TCP, so the UDP variable was
+   dead code — it could have been populated correctly and still done nothing. This is
+   the same class of bug as Section 12.3's unloaded `group_vars`: a variable that
+   looks configured but is wired to nothing.
+3. **Code and comments contradicted each other.** The port list was applied flat to
+   every host while the comments claimed `6443`/`9345`/`2379`/`2380` were
+   "rke2_server only". The comments described the intended design; the code opened
+   etcd on the mgmt node too.
+
+### 16.2 Port set, with provenance
+
+Verified 2026-08-17 against both authorities, which agree:
+
+- RKE2 — https://docs.rke2.io/install/requirements (Inventory of Ports)
+- Cilium — https://docs.cilium.io/en/v1.19/operations/system_requirements/
+  (v1.19 is the line RKE2 v1.36.3+rke2r1 bundles — Cilium 1.19.6, per Section 10)
+
+| Port | Proto | Purpose | Exposure |
+|---|---|---|---|
+| 22 | TCP | SSH | public, all hosts |
+| 80 | TCP | ingress + ACME HTTP-01 | public, all hosts |
+| 443 | TCP | ingress (Rancher/Harbor/demo UIs) | public, all hosts |
+| 6443 | TCP | Kubernetes API | public, RKE2 servers only |
+| 9345 | TCP | RKE2 supervisor API | peers only |
+| 2379 | TCP | etcd client | peers only |
+| 2380 | TCP | etcd peer | peers only |
+| 2381 | TCP | etcd metrics | peers only |
+| 10250 | TCP | kubelet metrics | peers only |
+| 4240 | TCP | Cilium health checks | peers only |
+| 8472 | UDP | Cilium VXLAN tunnel | peers only |
+
+**`2381` was missing from the original list entirely** — it appears in RKE2's port
+table but not in the hand-written comments the list was built from. Fetching the
+actual table rather than extending the existing list from memory is what caught it.
+
+**ICMP echo needs no rule.** Both docs list ICMP type 0/8 for Cilium health checks;
+Ubuntu's stock `/etc/ufw/before.rules` already ACCEPTs echo-request ahead of the
+default-deny policy, so an explicit rule would be redundant. Recorded rather than
+silently omitted — the next reader should not have to re-derive why ICMP is absent.
+
+**Ports deliberately not opened**, each with its reason, enumerated in
+`roles/hardening/defaults/main.yml`: WireGuard `51871/udp` (encryption not enabled),
+Geneve `6081/udp` (VXLAN is the tunnel here), Hubble `4244`/`4245` (not enabled),
+Cilium Prometheus `9962-9964` (scraped in-cluster, never crosses the node firewall),
+Calico BGP `179` (wrong CNI), NodePort `30000-32767` (services go through ingress).
+An unexplained absence is indistinguishable from an oversight; each of these is now
+a decision.
+
+### 16.3 Public vs node-to-node — the substantive design change
+
+The list is now split by **exposure**, not by component:
+
+**Public** is only what genuinely must be: SSH, ingress (80/443), and the Kubernetes
+API. `6443` is node-to-node in RKE2's own table, but this build needs it public —
+the fetched kubeconfig targets a node's public IP (`rke2_api_endpoint`, Section 12)
+and Rancher imports the cluster over it. That is a deliberate exposure, marked as
+such in the defaults so it is not mistaken for carelessness. It is also the reason
+the Section 12 API-endpoint work matters: a real load balancer would let 6443 be
+restricted to it instead of the internet.
+
+**Everything else is source-restricted** to `routa_rke2_peer_ips`, derived from the
+Terraform-generated inventory (same pattern as `rke2_tls_san`, so it tracks
+`worker_count` and cannot drift from the real addresses).
+
+**Why this matters more here than on a typical cloud:** Verda CPU instances in this
+build have no private network — peers reach each other over **public** IPs. There is
+no VPC boundary doing this job implicitly. Opening `2379` without a source
+restriction would have put an unauthenticated-by-network etcd endpoint on the public
+internet, holding every cluster secret. The `src` restriction is not defence in
+depth here; it is the only network-layer control there is.
+
+**Cluster rules are skipped on the mgmt node** (`when: inventory_hostname in
+groups['rke2_server']`), which runs k3s + Rancher and is not an RKE2 member — this
+is what resolves defect 3. mgmt's own k3s API is deliberately left closed: Rancher
+is reached over 443, and nothing external needs mgmt's API server. In this topology
+all three cluster nodes are servers, so RKE2's "server nodes" and "all RKE2 nodes"
+source columns collapse to the same peer set; noted in the defaults so a future
+split into dedicated workers does not silently inherit the wrong scope.
+
+### 16.4 One addition beyond the reported defects
+
+**80/443 were added**, which the review did not ask for. Not speculative: the
+sslip.io + cert-manager design committed in Section 2.1 requires port 80 publicly
+reachable for Let's Encrypt HTTP-01 validation, and Rancher/Harbor/the demo app are
+all reached over 443. Without them the platform layer would deploy and then be
+unreachable, and the failure would look like an ingress or DNS problem rather than a
+firewall one. Flagged explicitly rather than slipped in — if ingress ends up confined
+to a single node, `hardening_ingress_tcp_ports` should be emptied on the others.
+
+### 16.5 Verification
+
+Rendered rather than run, per the Section 12.3 lesson. Confirmed by evaluating the
+real variables against the example inventory (`-c local`, no host contact):
+
+- **mgmt** resolves to public `[22, 80, 443]` and *no* cluster rules — defect 3 fixed.
+- **cp-1/2/3** resolve to public `[22, 80, 443, 6443]`, peer-restricted TCP
+  `[9345, 2379, 2380, 2381, 10250, 4240]` and UDP `[8472]`, sourced from all three
+  peer IPs.
+- The `product()` loop expands to the correct `src`/`port` pairing (`item.0` is the
+  source IP, `item.1` the port) for both the TCP and UDP tasks — checked because a
+  transposed tuple would have produced plausible-looking rules allowing port
+  `203.0.113.11` from source `9345`.
+- `ufw` module parameter names confirmed against its module docs: `src` is a valid
+  alias for `from_ip`, and `udp` is a valid `proto` value.
+- No references to the removed `hardening_allowed_tcp_ports` /
+  `hardening_cilium_*_ports` remain anywhere in the repo.
+
+**Nothing provisioned, no playbook run, no commits.**

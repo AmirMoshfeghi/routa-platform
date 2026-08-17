@@ -1,19 +1,71 @@
 ---
-# See: https://docs.verda.com/cpu-and-gpu-instances/securing-your-instance/
-hardening_allowed_tcp_ports:
-  - 22      # SSH
-  - 6443    # Kubernetes API (rke2_server only — see tasks/main.yml)
-  - 9345    # RKE2 supervisor API (rke2_server only)
-  - 2379    # etcd client (rke2_server only)
-  - 2380    # etcd peer (rke2_server only)
-  - 10250   # kubelet
+# --- Firewall port policy --------------------------------------------------------
+# Ports verified 2026-08-17 against:
+#   RKE2   https://docs.rke2.io/install/requirements          (Inventory of Ports)
+#   Cilium https://docs.cilium.io/en/v1.19/operations/system_requirements/
+#          (v1.19 is the Cilium line RKE2 v1.36.3+rke2r1 bundles — see
+#          inventory/group_vars/all.yml)
+#   Verda  https://docs.verda.com/cpu-and-gpu-instances/securing-your-instance/
+#
+# Split by exposure, not by component: what must be reachable from the internet vs
+# what only cluster peers need. Node-to-node ports are applied with a source
+# restriction (routa_rke2_peer_ips) rather than opened to 0.0.0.0/0.
 
-# TODO before first apply: Cilium needs its own ports open between cluster nodes
-# (VXLAN 8472/udp by default, health checks 4240/tcp, etc.). Fetch the current
-# Cilium firewall requirements per CLAUDE.md rule 1 and extend this list — do not
-# guess the port set from memory.
-hardening_cilium_tcp_ports: []
-hardening_cilium_udp_ports: []
+# Reachable from anywhere, on every host.
+hardening_public_tcp_ports:
+  - 22      # SSH — Ansible control node and operator access
 
+# Reachable from anywhere, RKE2 server nodes only.
+# 6443 is node-to-node in RKE2's own table, but this build genuinely needs it public:
+# the fetched kubeconfig targets a node's public IP (rke2_api_endpoint) and Rancher
+# imports the cluster over it. Deliberately public, not an oversight — see
+# docs/decisions.md Section 16.
+hardening_server_public_tcp_ports:
+  - 6443    # Kubernetes API
+
+# Reachable from anywhere, on every host. Required by the sslip.io + cert-manager
+# architecture committed in docs/decisions.md Section 2.1: Let's Encrypt HTTP-01
+# validation needs port 80 publicly reachable, and the Rancher/Harbor/demo UIs are
+# served over 443 via ingress. Empty this list if ingress is confined to one node.
+hardening_ingress_tcp_ports:
+  - 80      # HTTP — ingress + ACME HTTP-01 challenge
+  - 443     # HTTPS — ingress
+
+# Node-to-node only: allowed from routa_rke2_peer_ips, denied from everywhere else.
+# Applied to RKE2 server nodes only (the mgmt node runs k3s/Rancher, not RKE2).
+# In this topology all 3 cluster nodes are servers, so RKE2's "server nodes" and
+# "all RKE2 nodes" source columns collapse to the same set.
+hardening_cluster_tcp_ports:
+  - 9345    # RKE2 supervisor API (node registration)
+  - 2379    # etcd client
+  - 2380    # etcd peer
+  - 2381    # etcd metrics
+  - 10250   # kubelet metrics
+  - 4240    # Cilium health checks
+
+hardening_cluster_udp_ports:
+  - 8472    # Cilium VXLAN tunnel
+
+# Deliberately NOT opened, and why — so the absence is a decision, not an omission:
+#   51871/udp  Cilium WireGuard      — encryption not enabled in this build
+#   6081/udp   Cilium Geneve         — VXLAN is the tunnel protocol here, not Geneve
+#   4244/4245  Hubble server/relay   — Hubble not enabled; add if it is
+#   9962-9964  Cilium Prometheus     — scraped in-cluster, not across the node firewall
+#   179/tcp    Calico BGP            — Calico is not the CNI (Cilium is)
+#   30000-32767 NodePort range       — services are exposed via ingress, not NodePort
+# ICMP echo (Cilium health, RKE2 "ICMP 0,8") needs no rule: Ubuntu's stock
+# /etc/ufw/before.rules already ACCEPTs echo-request before the default-deny policy.
+
+# --- Admin user handover ---------------------------------------------------------
+# Non-root admin user this role creates before it disables root SSH login.
+# Defaults track the repo-wide values in inventory/group_vars/all.yml; overriding
+# here would desync the role from the plays that connect as this user afterwards.
+hardening_admin_user: "{{ routa_admin_user }}"
+hardening_admin_groups: sudo
+hardening_admin_pubkey_path: "{{ routa_ssh_public_key_path }}"
+
+hardening_cluster_peer_ips: "{{ routa_rke2_peer_ips }}"
+
+hardening_disable_root_login: true
 hardening_disable_password_auth: true
 hardening_unattended_upgrades: true

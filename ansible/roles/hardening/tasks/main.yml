@@ -2,6 +2,12 @@
 # Baseline OS hardening, run against every node before RKE2 is installed.
 # See docs.verda.com/cpu-and-gpu-instances/securing-your-instance/ for the
 # provider's own baseline recommendations this extends.
+#
+# TASK ORDER IS LOAD-BEARING. This role runs as root (the only identity Verda's
+# minimal ubuntu-24.04 image seeds a key for) and ends by removing root SSH access.
+# So it must, in this order: create the admin user, install its key, grant it sudo,
+# PROVE it can log in and escalate, and only then disable root login. Moving the
+# lockdown tasks earlier turns a failed key install into an unrecoverable node.
 
 - name: Update apt cache
   apt:
@@ -23,6 +29,63 @@
     mode: "0644"
   when: hardening_unattended_upgrades | bool
 
+# --- Admin user handover ---------------------------------------------------------
+
+- name: Create the non-root admin user
+  user:
+    name: "{{ hardening_admin_user }}"
+    groups: "{{ hardening_admin_groups }}"
+    append: true
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+- name: Install the assignment public key for the admin user
+  ansible.posix.authorized_key:
+    user: "{{ hardening_admin_user }}"
+    key: "{{ lookup('file', hardening_admin_pubkey_path | expanduser) }}"
+    state: present
+    exclusive: false
+
+# Passwordless because the admin user has no password at all — it is a key-only
+# account, so a sudo password prompt would be unsatisfiable and would hang every
+# `become: true` task in the plays that follow.
+- name: Grant the admin user passwordless sudo
+  copy:
+    dest: "/etc/sudoers.d/90-{{ hardening_admin_user }}"
+    content: "{{ hardening_admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    owner: root
+    group: root
+    validate: "visudo -cf %s"
+
+# Connects as the admin user (task vars, precedence 17, outrank the play's
+# ansible_user) and escalates, exercising the exact path every later play uses.
+# This is the gate: if it fails, the role stops here with root access intact
+# rather than locking everyone out of a node it can no longer reach.
+- name: Verify the admin user can log in and escalate before root access is removed
+  command: id -un
+  become: true
+  changed_when: false
+  vars:
+    ansible_user: "{{ hardening_admin_user }}"
+  register: hardening_admin_probe
+
+- name: Assert the admin handover actually works
+  assert:
+    that:
+      - hardening_admin_probe.stdout | trim == 'root'
+    fail_msg: >-
+      Admin user {{ hardening_admin_user }} could not log in and escalate to root
+      (got '{{ hardening_admin_probe.stdout | default("") | trim }}'). Refusing to
+      disable root SSH login — doing so now would strand this node with no usable
+      access path. Fix the key install or sudoers entry and re-run.
+    success_msg: >-
+      Admin user {{ hardening_admin_user }} can log in and escalate; safe to
+      disable root SSH login.
+
+# --- SSH lockdown (only reached once the handover above is proven) ----------------
+
 - name: Disable SSH password authentication
   lineinfile:
     path: /etc/ssh/sshd_config
@@ -36,7 +99,13 @@
     path: /etc/ssh/sshd_config
     regexp: '^#?PermitRootLogin'
     line: 'PermitRootLogin no'
+  when: hardening_disable_root_login | bool
   notify: restart sshd
+
+# --- Firewall --------------------------------------------------------------------
+# Port sets and their doc provenance live in defaults/main.yml. Rules are added
+# before the policy is switched to default-deny, so a half-applied run never leaves
+# a node reachable-but-unmanaged or unreachable.
 
 - name: Install ufw
   apt:
@@ -49,12 +118,53 @@
     port: "22"
     proto: tcp
 
-- name: Allow role-specific TCP ports
+- name: Allow public TCP ports
   community.general.ufw:
     rule: allow
     port: "{{ item }}"
     proto: tcp
-  loop: "{{ hardening_allowed_tcp_ports }}"
+  loop: "{{ hardening_public_tcp_ports }}"
+
+- name: Allow ingress TCP ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ hardening_ingress_tcp_ports }}"
+
+- name: Allow the Kubernetes API publicly on RKE2 servers
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ hardening_server_public_tcp_ports }}"
+  when: inventory_hostname in groups['rke2_server']
+
+# Source-restricted: these carry etcd, the supervisor API and the pod-network
+# tunnel. Verda CPU instances have no private network here, so peers talk over
+# public IPs and this source restriction is the only thing keeping etcd off the
+# open internet. Skipped entirely on the mgmt node, which is not an RKE2 member.
+- name: Allow node-to-node TCP ports from cluster peers only
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.1 }}"
+    proto: tcp
+    src: "{{ item.0 }}"
+  loop: "{{ hardening_cluster_peer_ips | product(hardening_cluster_tcp_ports) | list }}"
+  loop_control:
+    label: "{{ item.1 }}/tcp from {{ item.0 }}"
+  when: inventory_hostname in groups['rke2_server']
+
+- name: Allow node-to-node UDP ports from cluster peers only
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.1 }}"
+    proto: udp
+    src: "{{ item.0 }}"
+  loop: "{{ hardening_cluster_peer_ips | product(hardening_cluster_udp_ports) | list }}"
+  loop_control:
+    label: "{{ item.1 }}/udp from {{ item.0 }}"
+  when: inventory_hostname in groups['rke2_server']
 
 - name: Enable ufw with default-deny incoming
   community.general.ufw:

@@ -57,4 +57,36 @@ rke2_api_endpoint: "https://{{ rke2_api_endpoint_host }}:6443"
 # which today is already one of the three.
 rke2_tls_san: "{{ ((groups['rke2_server'] | map('extract', hostvars, 'ansible_host') | list) + [rke2_api_endpoint_host]) | unique | list }}"
 
+# --- SSH identities: bootstrap as root, then hand over to an admin user ----------
+# Verda's minimal ubuntu-24.04 image seeds the SSH key to root and creates no
+# `ubuntu` user (verified 2026-08-17 — see docs/decisions.md Section 15). So first
+# contact is necessarily root; the inventory sets ansible_user=root for that.
+#
+# The hardening role then creates routa_admin_user, installs the same public key for
+# it, grants passwordless sudo, and only then disables root SSH login. Every play
+# after hardening overrides ansible_user to routa_admin_user in its own `vars:`
+# block — play vars (precedence 12) beat inventory group vars (3-6), per
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html
+# (verified 2026-08-17). Note `remote_user:` is deliberately NOT used for this: the
+# docs do not define its precedence against the ansible_user variable, and relying
+# on an unspecified interaction to pick an SSH identity is how you get a lockout.
+routa_bootstrap_user: root
+routa_admin_user: routa
+
+# Public IPs of the RKE2 cluster nodes, used as ufw source restrictions so
+# node-to-node ports (etcd, VXLAN, kubelet, supervisor) are reachable only from
+# cluster peers rather than the whole internet — see roles/hardening. Derived from
+# the Terraform-generated inventory, same pattern as rke2_tls_san above, so it
+# tracks worker_count and cannot drift from the real addresses.
+#
+# These are public IPs: Verda CPU instances have no private network in this build,
+# so peers reach each other over public addresses. That makes the source
+# restriction the only thing standing between etcd and the internet.
+routa_rke2_peer_ips: "{{ groups['rke2_server'] | map('extract', hostvars, 'ansible_host') | list | unique }}"
+
+# Public half of the assignment keypair, installed for routa_admin_user during
+# hardening. Same key Terraform registers via verda_ssh_key (terraform/ssh_key.tf),
+# so the admin user is reachable with the key already in use for root.
+routa_ssh_public_key_path: "~/.ssh/routa_ed25519.pub"
+
 ansible_python_interpreter: /usr/bin/python3
