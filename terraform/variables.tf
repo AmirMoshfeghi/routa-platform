@@ -7,8 +7,10 @@ variable "location" {
 variable "image" {
   description = <<-EOT
     Verda OS image identifier for CPU-only instances (plain Ubuntu 24.04, no CUDA).
-    Resolved 2026-08-17 via `verda images --type CPU.8V.32G -o json` (cross-checked
-    against `--type CPU.4V.16G` — same image compatible with both). The `image_type`
+    Resolved 2026-08-17 via `verda images --type CPU.8V.32G -o json`, cross-checked
+    against `--type CPU.4V.16G`. Re-verified the same day against `--type
+    CPU.16V.64G` when the worker type changed (Section 14) — the same image is
+    compatible with every type this build now uses. The `image_type`
     field (not the `id` UUID) is what the verda_instance resource's `image` argument
     expects — see terraform/instances.tf's schema-verification comment.
     Candidates returned for Ubuntu 24.04, all under category "ubuntu":
@@ -51,9 +53,19 @@ variable "mgmt_os_volume_gb" {
 }
 
 variable "worker_instance_type" {
-  description = "Instance type for the RKE2 cluster nodes. Locked in docs/decisions.md Section 4.4."
+  description = <<-EOT
+    Instance type for the RKE2 cluster nodes. Originally CPU.8V.32G (locked in
+    docs/decisions.md Section 4.4); fell back to CPU.16V.64G on 2026-08-17 after
+    CPU.8V.32G dropped out of FIN-03 stock mid-apply — see Section 14.
+    Verified 2026-08-17 via `verda availability --location FIN-03` (CPU.8V.32G absent,
+    CPU.16V.64G present) and `verda cost estimate --type CPU.16V.64G --os-volume 100`
+    ($2.68 instance + $0.66 volume = $3.34/day, vs $2.00/day for the 8V).
+    Cluster total is now ~$11/day (3 workers + mgmt), still inside budget.
+    Re-check availability immediately before apply — FIN-03 stock is live and this
+    variable exists because it already moved once.
+  EOT
   type        = string
-  default     = "CPU.8V.32G"
+  default     = "CPU.16V.64G"
 }
 
 variable "worker_os_volume_gb" {

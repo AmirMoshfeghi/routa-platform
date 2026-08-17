@@ -6,8 +6,11 @@
 
 # image = "ubuntu-24.04"
 
-# Uncomment to override locked defaults from docs/decisions.md Section 4.4:
+# Uncomment to override the defaults in variables.tf. Sizing was locked in
+# docs/decisions.md Section 4.4; the worker type has since moved to CPU.16V.64G
+# after CPU.8V.32G left FIN-03 stock (Section 14). Re-check `verda availability
+# --location FIN-03` before apply — this list is live and has already changed once.
 # location              = "FIN-03"
 # mgmt_instance_type    = "CPU.4V.16G"
-# worker_instance_type  = "CPU.8V.32G"
+# worker_instance_type  = "CPU.16V.64G"
 # worker_count          = 3

@@ -937,3 +937,78 @@ required with no default, by design, so `plan`/`apply` would fail loudly rather 
 guess). `terraform.tfvars.example`, `CLAUDE.md`, and `README.md` updated to match —
 none of them still describe this as open. Still scaffold-only: no `terraform plan`
 or `apply` run, nothing committed.
+
+---
+
+## 14. Capacity constraint hit mid-apply: worker type falls back to CPU.16V.64G (2026-08-17)
+
+**What happened:** `terraform apply` failed partway through with a 503 "No capacity
+available" on 2 of the 3 workers. `CPU.8V.32G` — the worker type locked in Section
+4.4 and re-confirmed in stock as recently as 2026-08-16 (Section 4.1) — had dropped
+out of FIN-03 availability *during the apply itself*.
+
+**Diagnosis, from live data rather than assumption:**
+
+```
+verda availability --location FIN-03
+```
+
+FIN-03 now returns 13 types. `CPU.8V.32G` is absent. The CPU types still in stock are
+`CPU.4V.16G`, `CPU.16V.64G`, `CPU.180V.720G`, `CPU.360V.1440G`. Note `CPU.32V.128G`
+has also since vanished relative to the Section 4.1 snapshot — the inventory really
+does churn, in both directions.
+
+**Decision: fall back to `CPU.16V.64G`** — the next type up that is actually in stock,
+and the cheapest viable one (the 180V/360V types are enormous and would blow the
+budget). Verified before committing to it:
+
+| Check | Command | Result |
+|---|---|---|
+| In stock | `verda availability --location FIN-03` | `CPU.16V.64G` present |
+| Cost | `verda cost estimate --type CPU.16V.64G --os-volume 100` | $2.68 + $0.66 = **$3.34/day** |
+| Image compatible | `verda images --type CPU.16V.64G` | `ubuntu-24.04` present |
+
+That last check mattered: the image resolved in Section 13 had only ever been
+cross-checked against `CPU.8V.32G` and `CPU.4V.16G`. Changing instance type without
+re-verifying image compatibility would have been exactly the kind of assumption
+`CLAUDE.md` rule 3 exists to prevent.
+
+**Cost impact, accepted:** $3.34/day per worker vs $2.00 — cluster total moves from
+~$7/day to **~$11/day** ($3.34 × 3 + $1.00 mgmt). Against the remaining balance this
+is still comfortably inside budget, and Section 4.4's governing trade-off still holds:
+abundant credits are worth spending to protect scarce time. The upside is incidental —
+64 GB per worker instead of 32 GB removes any doubt about running Harbor,
+kube-prometheus-stack, KWOK and Kueue concurrently.
+
+**All three workers move, not just the two that failed.** `routa-cp-2` had already
+provisioned successfully as a `CPU.8V.32G` and is in Terraform state; changing
+`worker_instance_type` means Terraform will **replace** it. That is intended and worth
+the rebuild: a 3-node etcd quorum with one member on materially different hardware is
+an asymmetry that shows up later as uneven resource pressure and confusing
+"why is this node always the one that's slow" incidents. `routa-cp-2` holds no state
+worth preserving at this stage — the cluster isn't bootstrapped yet — so replacement is
+nearly free right now and would not be later.
+
+**Section 4.4's original sizing table is deliberately left unedited** as a record of
+what was planned before the constraint hit. The reasoning there (32 GB sized against
+the actual workload, 64 GB rejected as unused headroom) was sound on the information
+available; it was overtaken by capacity, not by being wrong. Amending it in place
+would erase the more interesting fact — that the plan survived contact with reality
+only up to the point where the provider ran out of the SKU it depended on.
+
+**Operational note for the report.** Section 4.1 already called capacity "a
+first-class operational fact on a GPU cloud" and argued for provisioning sooner
+rather than later. This is that prediction landing, and mid-apply is the worst
+moment for it. The real lesson is narrower than "check availability first" — that
+*was* done, twice. It is that on a provider with live inventory, an instance type is
+not a stable input: a plan validated at T-0 can be invalid at T+3 minutes. The
+production answer is to design for substitutability — a prioritised list of
+acceptable types with automatic fallback, rather than one hardcoded SKU whose
+disappearance halts the build. Left as a documented improvement rather than built,
+since Terraform has no native "first available from this list" primitive and
+faking it would cost more time than the fallback it automates.
+
+**Changed:** `terraform/variables.tf` (`worker_instance_type` default, plus the
+`image` variable's provenance note now covering `CPU.16V.64G`),
+`terraform/terraform.tfvars.example`. No `plan` or `apply` run — the replace plan is
+to be reviewed by hand first.
