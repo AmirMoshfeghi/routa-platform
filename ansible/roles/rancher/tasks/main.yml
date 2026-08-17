@@ -163,6 +163,7 @@
       --set letsEncrypt.email={{ rancher_letsencrypt_email }}
       --set letsEncrypt.environment={{ rancher_letsencrypt_environment }}
       --set letsEncrypt.ingress.class={{ rancher_letsencrypt_ingress_class }}
+      --set agentTLSMode={{ rancher_agent_tls_mode }}
       --wait --timeout 15m
   register: rancher_install
   changed_when: "'has been upgraded' in rancher_install.stdout

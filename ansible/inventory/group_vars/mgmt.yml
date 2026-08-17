@@ -161,6 +161,31 @@ rancher_tls_source: "letsEncrypt"
 rancher_letsencrypt_environment: "production"
 rancher_letsencrypt_ingress_class: "{{ traefik_ingress_class }}"
 
+# agentTLSMode: how downstream cluster agents (cattle-cluster-agent) validate
+# Rancher's own TLS certificate when phoning home. Two values, verified 2026-08-17
+# against https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/installation-references/tls-settings :
+#
+#   strict        agents trust ONLY the CA in the `cacerts` setting (a pinned private
+#                 CA). This is the default for new installs on Rancher 2.9+.
+#   system-store  agents trust any CA in the OS trust store — including public CAs
+#                 like Let's Encrypt.
+#
+# We serve a public Let's Encrypt certificate (Section 18), not a pinned private CA,
+# so "strict" is the wrong mode for this build: cacerts is unset, agents find no
+# root CA to pin against, and cattle-cluster-agent crash-loops with "Strict CA
+# verification is enabled but encountered error finding root CA" — hit live on the
+# first RKE2 import attempt, see docs/decisions.md Section 19.
+#
+# Set here as a Helm chart value (`agentTLSMode`) rather than patched onto the
+# settings.management.cattle.io/agent-tls-mode resource after install, per the
+# docs: "If you specify the value through the Helm chart, you may only modify the
+# value with Helm" — Helm-managed and kubectl/UI-managed are mutually exclusive
+# once one has touched it, and setting it at install time is what makes a rebuild
+# reproducible instead of depending on a manual post-install patch being remembered.
+# (The Helm option itself only exists from chart 2.9.0 onward — irrelevant here
+# since we're on 2.15.0, but worth knowing if this is ever backported.)
+rancher_agent_tls_mode: "system-store"
+
 # Let's Encrypt requires a contact email. Not a credential, but still not hardcoded
 # here — supply with -e rancher_letsencrypt_email=... or set it in a local var file.
 # The rancher role asserts it is set rather than letting the chart fail obscurely.

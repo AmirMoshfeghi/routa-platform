@@ -144,11 +144,38 @@ The tool also returns a `price_per_hour` figure per instance. Those are catalog 
 that cannot see credits or contract terms, so they are deliberately not reproduced here as
 spend — the web console is authoritative for actual charges.
 
+## A prediction that paid off: `agentTLSMode` flagged before it broke anything
+
+The three cases above are all AI output caught being wrong. Worth recording one where
+the same scrutiny produced a correct call in advance, because a verification loop that
+only ever reports failures is not actually evidence the loop is working — it could
+just mean nothing was checked closely enough to catch the successes too.
+
+While planning the Rancher install (`decisions.md` §17.8), reading the chart's
+`values.yaml` surfaced that `agentTLSMode` defaults to `strict` on Rancher 2.9+, that
+`strict` mode expects a pinned private CA via `cacerts`, and that this build serves a
+public Let's Encrypt certificate instead. The interaction between those two facts was
+flagged explicitly as an open risk for the cluster-import step, deferred rather than
+guessed at, because it hadn't been observed yet — only reasoned about from the chart
+source and the docs.
+
+It happened exactly as flagged: the first RKE2 import attempt failed with
+`cattle-cluster-agent` crash-looping on `"Strict CA verification is enabled but
+encountered error finding root CA"` — precisely the strict-mode-meets-public-cert
+failure named in advance. Because the cause was already on record rather than unknown,
+diagnosis was immediate rather than exploratory: the fix (`agent-tls-mode` ->
+`system-store`) was applied on the first attempt, not arrived at by trial and error.
+Full account in `decisions.md` §19.
+
 ## Summary
 
 AI tooling meaningfully accelerated this build — live-fetched and pinned versions, correct
 HA bootstrap/join config, a clean repository structure. It also produced a silently-broken
 variable path, a misleading green check, and a default that undercut the assignment's
 intent. All three were caught, and two of them hardened the process (rule 4, and the
-override to HA). That loop — delegate, then verify by rendering rather than by trust — is
-the actual skill, and it is the one this document is meant to evidence.
+override to HA). A fourth case went the other way: a failure mode reasoned out from the
+chart source during planning, before it was ever observed, then confirmed exactly as
+predicted at import time — evidence the same scrutiny that catches wrong output also
+produces correct calls, not just corrections after the fact. That loop — delegate, then
+verify by rendering rather than by trust — is the actual skill, and it is the one this
+document is meant to evidence.

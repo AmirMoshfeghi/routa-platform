@@ -1459,3 +1459,74 @@ and phone. This is a prerequisite for the deferred cluster import — with a pub
 trusted cert the import can use the plain registration command instead of
 `--insecure`, so the downstream agent verifies Rancher's certificate properly rather
 than being told not to.
+
+---
+
+## 19. RKE2 cluster import: `agentTLSMode: strict` vs a public Let's Encrypt cert (2026-08-17)
+
+First import attempt of the RKE2 cluster into Rancher failed. `cattle-cluster-agent`
+crash-looped with:
+
+```
+Strict CA verification is enabled but encountered error finding root CA
+```
+
+**Why.** Rancher gates how downstream agents validate Rancher's own TLS certificate
+with the `agent-tls-mode` setting (`settings.management.cattle.io/agent-tls-mode`),
+two values:
+
+- `strict` — agents trust *only* the CA named in the `cacerts` setting: a pinned
+  private CA. Default for new installs on Rancher 2.9+ (Section 17 chart notes).
+- `system-store` — agents trust any CA already in the OS trust store, which covers
+  public CAs including Let's Encrypt.
+
+We serve a public Let's Encrypt certificate (Section 18), not a pinned private CA, so
+`cacerts` was never set — there was no private root for `strict` mode to find. The
+error message is literally accurate: it found no root CA, because none exists to find
+under this TLS setup. `strict` and a public cert are simply incompatible; this was not
+a misconfiguration of `cacerts`, it was the wrong mode for the certificate we run.
+
+**One easy-to-misread detail while confirming the default.** `kubectl get
+settings.management.cattle.io agent-tls-mode -o jsonpath='{.value}'` returned nothing.
+That is not "unset" in the sense of undefined — it means Rancher hasn't been told an
+explicit override, so it's running on `.default`, which for a 2.9+ new install is
+`strict`. The active value has to be read from `.default` when `.value` is empty, not
+assumed absent. Checking `.value` alone and seeing blank would read as "no policy
+configured," when the policy in force is `strict`.
+
+**Fix applied live.** Patched `agent-tls-mode` to `system-store`, then re-applied the
+cluster's registration manifest so `cattle-cluster-agent` regenerated under the new
+mode. Cluster went `Active`, agent `1/1 Running` (2 replicas).
+
+**Made reproducible.** Set at Rancher install time as a Helm chart value —
+`--set agentTLSMode=system-store` in `roles/rancher/tasks/main.yml`, sourced from
+`rancher_agent_tls_mode` in `inventory/group_vars/mgmt.yml` — rather than left as a
+manual post-install `kubectl patch` someone has to remember on every rebuild. This
+was a deliberate choice between two docs-endorsed mechanisms, not the only one
+available: the docs (ranchermanager.docs.rancher.com, installation-references/
+tls-settings, verified 2026-08-17) also support patching the
+`settings.management.cattle.io` resource directly. They were not treated as
+interchangeable — the same page states "If you specify the value through the Helm
+chart, you may only modify the value with Helm," i.e. the two mechanisms are
+mutually exclusive once one has touched the setting. The Helm value was preferred
+specifically because it's what makes the fix survive a rebuild without depending on
+anyone remembering the manual patch step.
+
+**Blast-radius note, for the record.** The docs warn that changing `agent-tls-mode`
+can disconnect currently-connected downstream agents if their certificate
+configuration doesn't line up with the new mode. Not a concern in this instance: no
+agents were connected yet — this was the first import attempt, so there was nothing
+live to drop.
+
+**Predicted, not stumbled into.** This failure mode — `agentTLSMode` defaulting to
+`strict` while the install uses a public Let's Encrypt cert — was called out as an
+open risk during planning, before the import was attempted (Section 17.8: *"Whether
+[strict mode] applies to a publicly-trusted Let's Encrypt production cert ... is
+unverified — flagged rather than guessed"*). Flagging it in advance is why it was
+diagnosed from the first log line rather than treated as a mystery.
+
+**Verification.** Rendered, not applied — `rancher_agent_tls_mode` resolves to
+`system-store` from the repo root; `ansible-playbook site.yml --syntax-check` passes
+from the `ansible/` basedir. Not re-run against routa-mgmt as part of this change;
+the value now matches what was already patched live, so the next full rebuild
+reproduces the fix instead of regressing to `strict`.
