@@ -1,0 +1,13 @@
+# Starter values for chart harbor@1.19.2 (see application.yaml). Placeholder only —
+# expose.tls, externalURL and persistence sizing all need real values (host/DNS from
+# docs/decisions.md Section 2.1's sslip.io plan) before this is deployable. Fetch the
+# chart's values.yaml at this exact version before filling these in (CLAUDE.md rule 1).
+expose:
+  type: ingress
+  tls:
+    enabled: false   # TODO: cert-manager + sslip.io TLS, per docs/decisions.md
+
+externalURL: https://REPLACE_ME
+
+persistence:
+  enabled: true

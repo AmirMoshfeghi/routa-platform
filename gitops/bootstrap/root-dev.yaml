@@ -1,0 +1,26 @@
+# App-of-apps root for the dev environment. Points at the dev overlay, which
+# patches gitops/platform (the base) via Kustomize. Promotion to staging/prod is
+# "change targetRevision / merge the overlay diff", not a separate pipeline.
+#
+# TODO: fill in repoURL once this repo has a remote (e.g. `verda-cloud/routa-platform`
+# or your own GitHub URL). Left unset on purpose rather than guessed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: routa-dev
+  namespace: argocd
+spec:
+  project: routa-platform
+  source:
+    repoURL: REPLACE_ME
+    targetRevision: main
+    path: gitops/environments/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

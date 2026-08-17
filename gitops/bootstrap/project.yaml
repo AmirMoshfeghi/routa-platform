@@ -1,0 +1,19 @@
+# Schema verified 2026-08-17 against Argo CD v3.5.1 docs
+# (https://argo-cd.readthedocs.io/en/stable/user-guide/projects/) — the version this
+# repo targets, pinned in gitops/platform/argocd-install.md and the argo-cd Helm chart
+# version below.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: routa-platform
+  namespace: argocd
+spec:
+  description: Platform components and demo workloads for the routa cluster
+  sourceRepos:
+    - "*"   # tighten to this repo's URL once it has one
+  destinations:
+    - namespace: "*"
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"

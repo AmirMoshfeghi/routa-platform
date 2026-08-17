@@ -1,0 +1,8 @@
+# Base: the platform's set of child Applications, unpatched. Consumed by
+# gitops/environments/{dev,staging,prod} via `resources: [../../platform]`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - kube-prometheus-stack/application.yaml
+  - harbor/application.yaml
+  - demo-app/application.yaml

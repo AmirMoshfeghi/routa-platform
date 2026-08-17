@@ -1,0 +1,10 @@
+# Starter values for chart kube-prometheus-stack@88.3.0 (see application.yaml).
+# Intentionally minimal — this is a scaffold, not a tuned config. Before real use,
+# fetch the chart's values.yaml at this exact version (per CLAUDE.md rule 1) rather
+# than assuming the schema hasn't moved across a major version bump.
+grafana:
+  enabled: true
+
+prometheus:
+  prometheusSpec:
+    retention: 7d

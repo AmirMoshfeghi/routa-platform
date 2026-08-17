@@ -1,0 +1,39 @@
+# staging isolates its resources in `-staging` namespaces and tracks the `staging`
+# git ref instead of `main` — promoting dev -> staging is "fast-forward the staging
+# branch/tag", reviewable as a diff before it lands, not a rebuild.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../platform
+
+patches:
+  - target:
+      kind: Application
+      name: kube-prometheus-stack
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: monitoring-staging
+      - op: replace
+        path: /spec/sources/1/targetRevision
+        value: staging
+  - target:
+      kind: Application
+      name: harbor
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: harbor-staging
+      - op: replace
+        path: /spec/sources/1/targetRevision
+        value: staging
+  - target:
+      kind: Application
+      name: demo-app
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: demo-staging
+      - op: replace
+        path: /spec/source/targetRevision
+        value: staging

@@ -1,0 +1,24 @@
+# Wraps demo-app/{deployment,service}.yaml as its own child Application so it has an
+# independent destination namespace, matching the kube-prometheus-stack and harbor
+# children — keeps the platform base a flat list of Applications the root
+# app-of-apps (gitops/bootstrap/root-*.yaml) can sync uniformly.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+spec:
+  project: routa-platform
+  source:
+    repoURL: REPLACE_ME
+    targetRevision: main
+    path: gitops/platform/demo-app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

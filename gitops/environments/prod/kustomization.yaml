@@ -1,0 +1,46 @@
+# prod isolates its resources in `-prod` namespaces and tracks the `prod` git ref
+# (intended as a tag bumped deliberately, e.g. `prod-2026-08-17`, not a moving
+# branch). Combined with root-prod.yaml's lack of automated sync, promotion to prod
+# is a two-step, reviewable gate: bump the ref here, then manually Sync in Argo CD.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../platform
+
+patches:
+  - target:
+      kind: Application
+      name: kube-prometheus-stack
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: monitoring-prod
+      - op: replace
+        path: /spec/sources/1/targetRevision
+        value: prod
+      - op: remove
+        path: /spec/syncPolicy/automated
+  - target:
+      kind: Application
+      name: harbor
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: harbor-prod
+      - op: replace
+        path: /spec/sources/1/targetRevision
+        value: prod
+      - op: remove
+        path: /spec/syncPolicy/automated
+  - target:
+      kind: Application
+      name: demo-app
+    patch: |-
+      - op: replace
+        path: /spec/destination/namespace
+        value: demo-prod
+      - op: replace
+        path: /spec/source/targetRevision
+        value: prod
+      - op: remove
+        path: /spec/syncPolicy/automated

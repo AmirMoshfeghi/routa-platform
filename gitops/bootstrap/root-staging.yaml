@@ -1,0 +1,23 @@
+# See root-dev.yaml for the pattern this follows. Promotion dev -> staging is a PR
+# that bumps this Application's targetRevision (or the overlay itself), reviewed
+# like any other change.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: routa-staging
+  namespace: argocd
+spec:
+  project: routa-platform
+  source:
+    repoURL: REPLACE_ME
+    targetRevision: main
+    path: gitops/environments/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

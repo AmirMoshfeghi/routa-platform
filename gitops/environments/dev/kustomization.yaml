@@ -1,0 +1,6 @@
+# dev tracks the platform base as-is — fast-moving, no promotion gate. This is what
+# `main` deploys automatically (see gitops/bootstrap/root-dev.yaml: automated sync).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../platform

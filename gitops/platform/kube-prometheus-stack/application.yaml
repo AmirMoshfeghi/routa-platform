@@ -1,0 +1,30 @@
+# Chart version verified 2026-08-17 via https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+spec:
+  project: routa-platform
+  # Multi-source Application: chart from the Helm repo, values.yaml from this git
+  # repo (Argo CD v3.5.1 multi-source apps — see
+  # https://argo-cd.readthedocs.io/en/stable/user-guide/multiple_sources/).
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: "88.3.0"
+      helm:
+        valueFiles:
+          - $values/gitops/platform/kube-prometheus-stack/values.yaml
+    - repoURL: REPLACE_ME
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
