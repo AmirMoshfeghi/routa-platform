@@ -28,12 +28,17 @@ spec:
   # Neither goes through Argo CD, so neither belongs in an Argo AppProject's access
   # list. Re-grep before adding a new source rather than assuming this list is stale
   # the next time something changes.
+  #
+  # registry.k8s.io/kueue/charts added 2026-08-18 (Kueue bonus task,
+  # gitops/bootstrap/kueue.yaml) — re-grepped the full list at the same time rather
+  # than just appending, per the instruction above; the other five were unchanged.
   sourceRepos:
     - https://github.com/AmirMoshfeghi/routa-platform  # this repo — root apps, $values refs
     - https://argoproj.github.io/argo-helm              # argo-cd chart (gitops/bootstrap/argocd.yaml)
     - quay.io/jetstack/charts                           # cert-manager chart, OCI (gitops/bootstrap/cert-manager.yaml)
     - https://prometheus-community.github.io/helm-charts  # kube-prometheus-stack chart
     - https://helm.goharbor.io                          # harbor chart
+    - registry.k8s.io/kueue/charts                      # kueue chart, OCI (gitops/bootstrap/kueue.yaml)
   destinations:
     - namespace: "*"
       server: https://kubernetes.default.svc

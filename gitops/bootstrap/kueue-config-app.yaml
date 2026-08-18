@@ -1,0 +1,46 @@
+# Wraps gitops/bootstrap/kueue-config/ as its own Application, same structural fix as
+# cluster-issuer-app.yaml (docs/decisions.md Section 23): the ResourceFlavor/
+# ClusterQueue objects in that directory depend on CRDs kueue.yaml installs, and
+# Argo's comparison/dry-run pass needs the whole target Application's resource list
+# to validate together — bundling a CRD-dependent CR into bootstrap's own sync trips
+# "no matches for kind ClusterQueue" before any sync-wave ordering gets a chance to
+# help, exactly like the ClusterIssuer incident. Separate Application, separate
+# comparison/apply cycle.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kueue-config
+  namespace: argocd
+  annotations:
+    # Wave "1", same as cluster-issuer-app.yaml and for the same reason: ordering
+    # hint for BOOTSTRAP's own sync (kueue.yaml is wave "0") so bootstrap won't even
+    # create this Application until kueue's Application reports Healthy — narrows the
+    # window for this Application's own first sync to race the CRDs, though
+    # SkipDryRunOnMissingResource below is what makes it correct even so, not just
+    # usually-fine (same reasoning as cluster-issuer-app.yaml).
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: routa-platform
+  source:
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+    targetRevision: main
+    path: gitops/bootstrap/kueue-config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kueue-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # REQUIRED — scenario 2 from Argo's sync-options docs, same as
+      # cluster-issuer-app.yaml: the CRD is not part of THIS Application's sync, it's
+      # installed by a separate sibling Application (kueue.yaml).
+      #
+      # ServerSideApply NOT set here, deliberately, same reasoning as
+      # cluster-issuer-app.yaml: that option solves a different problem (a CRD's own
+      # apply exceeding the client-side annotation size limit). ResourceFlavor and
+      # ClusterQueue are tiny CRs, not CRDs — no annotation-size problem exists here
+      # to solve.
+      - SkipDryRunOnMissingResource=true

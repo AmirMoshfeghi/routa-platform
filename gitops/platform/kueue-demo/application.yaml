@@ -1,0 +1,45 @@
+# Demonstrates the Kueue queueing capability installed by gitops/bootstrap/kueue.yaml
+# and gitops/bootstrap/kueue-config-app.yaml: a LocalQueue bound to the shared
+# cluster-queue, plus two Jobs that together exceed its quota so the second visibly
+# queues behind the first. Namespaced (kueue-demo), so — unlike kueue.yaml/
+# kueue-config-app.yaml — this lives in gitops/platform/, instantiated once per
+# environment via platform/kustomization.yaml, the same shape as demo-app/.
+#
+# No sync-wave annotation needed: this Application is only ever created once its
+# root (gitops/bootstrap/root-*.yaml, wave "2") is, which already requires bootstrap's
+# wave "0" and wave "1" — including kueue.yaml and kueue-config-app.yaml — to be
+# Synced and Healthy first (see root-dev.yaml's own comment). By the time this
+# Application's manifests are even compared, the LocalQueue CRD and the
+# cluster-queue ClusterQueue it references already exist on the API server, so there
+# is no CRD race here the way there was for cluster-issuer/kueue-config against
+# bootstrap's OWN sync.
+#
+# Single shared demo, not one LocalQueue per environment: considered replicating this
+# the way demo-app/harbor/kube-prometheus-stack are (one destination namespace per
+# environment via the dev/staging/prod overlay patches) and deferred it — the point
+# of this demo is to show the queueing mechanism works at all, which one clear
+# instance already does; every environment's LocalQueue would bind to the SAME
+# cluster-queue anyway (it's a genuine cluster singleton, Section 20.3), so three
+# LocalQueues would be three names for one quota, not three independent
+# demonstrations. Kept as a single destination namespace (kueue-demo) rather than
+# following the per-environment destination-namespace patch pattern used elsewhere.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kueue-demo
+  namespace: argocd
+spec:
+  project: routa-platform
+  source:
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+    targetRevision: main
+    path: gitops/platform/kueue-demo
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kueue-demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

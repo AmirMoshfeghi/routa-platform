@@ -7,6 +7,8 @@ resources:
   - cert-manager.yaml
   - cluster-issuer-app.yaml
   - local-path-provisioner-app.yaml
+  - kueue.yaml
+  - kueue-config-app.yaml
   - root-dev.yaml
   - root-staging.yaml
   - root-prod.yaml
@@ -25,3 +27,8 @@ resources:
 # adding the default-StorageClass annotation), so Argo syncs it via Kustomize rather
 # than as a plain-manifest directory — see gitops/bootstrap/local-path-provisioner/
 # kustomization.yaml.
+#
+# kueue-config/ (the directory) follows the same split as cluster-issuer/:
+# kueue-config-app.yaml points at it as its own separate sync target, decoupled from
+# bootstrap's own sync, because its ResourceFlavor/ClusterQueue objects depend on
+# CRDs kueue.yaml installs.

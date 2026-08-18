@@ -1,0 +1,78 @@
+# Kueue — job queueing / quota management. Optional bonus task (docs/decisions.md
+# Section 1.1/1.2): listed in the brief because Verda documents Kueue for their own
+# Instant Clusters (https://docs.verda.com/clusters/instant-clusters/kubernetes/queueing/),
+# so this is something Verda actually operates, not generic filler.
+#
+# Version v0.19.1 verified 2026-08-18 two independent ways: (1)
+# kueue.sigs.k8s.io/docs/getting-started/installation/ names it the current stable
+# release and gives this exact Helm command; (2)
+# github.com/kubernetes-sigs/kueue/releases confirms v0.19.1 as the latest
+# non-prerelease tag (2026-08-12) ahead of v0.18.5/v0.19.0. Cross-checked the pulled
+# chart itself (charts/kueue/Chart.yaml at the v0.19.1 git tag) — version: 0.19.1,
+# appVersion: "v0.19.1", so the chart and the app release move together, not
+# independently versioned the way e.g. kube-prometheus-stack's are.
+#
+# API version note: the installation doc's own rendered examples still show
+# `kueue.x-k8s.io/v1beta1` in places, but the ACTUAL manifests shipped in the v0.19.1
+# git tag (site/static/examples/admin/single-clusterqueue-setup.yaml, fetched
+# directly rather than trusting the doc's prose) use `kueue.x-k8s.io/v1beta2` for
+# ResourceFlavor/ClusterQueue/LocalQueue — matching what Verda's own Instant Clusters
+# doc references. gitops/bootstrap/kueue-config/ (below) uses v1beta2 accordingly.
+# Exactly the kind of version-specific drift CLAUDE.md rule 1 warns about: the prose
+# summary of a doc page and the pinned tag's actual files disagreed, and the file win.
+#
+# OCI chart: repoURL is the registry path WITHOUT oci://, same convention as
+# cert-manager.yaml (quay.io/jetstack/charts) — confirmed against
+# argo-cd.readthedocs.io/en/stable/user-guide/helm/#helm-repositories.
+#
+# No helm parameters set: pulled charts/kueue/values.yaml at v0.19.1 and confirmed
+# the relevant defaults are already what this cluster needs —
+# enableCertManager: false (Kueue manages its own webhook cert internally, no
+# dependency on the cluster's cert-manager install), enablePrometheus: false
+# (considered enabling given kube-prometheus-stack is already installed — deferred,
+# see docs/decisions.md, this entry — no other config changes needed), and
+# integrations.frameworks already includes "batch/job", which is the only workload
+# type this demo (gitops/platform/kueue-demo/) uses.
+#
+# Cluster-singleton, same reasoning as cert-manager.yaml / cluster-issuer-app.yaml /
+# local-path-provisioner-app.yaml (docs/decisions.md Section 20.3): Kueue's CRDs
+# (ClusterQueue, ResourceFlavor, Workload, etc.) are cluster-scoped, and there is
+# exactly one kueue-system controller for the whole cluster — three environment-
+# overlay Applications would collide over the same objects. Lives in
+# gitops/bootstrap/, not gitops/platform/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kueue
+  namespace: argocd
+  annotations:
+    # Wave "0", same wave as cert-manager.yaml / local-path-provisioner-app.yaml —
+    # this installs a controller + CRDs and has no dependency of its own within
+    # bootstrap. gitops/bootstrap/kueue-config-app.yaml (wave "1") depends on the
+    # CRDs this Application installs, the same shape as cluster-issuer-app.yaml
+    # depending on cert-manager.yaml.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: routa-platform
+  source:
+    repoURL: registry.k8s.io/kueue/charts
+    chart: kueue
+    targetRevision: "0.19.1"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kueue-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Required, not optional — verified directly rather than waiting to hit the
+      # failure live (the way cert-manager's need for this was first discovered,
+      # docs/decisions.md Section 21.4/24). Extracted the chart's actual CRD
+      # templates at the v0.19.1 tag: kueue.x-k8s.io_workloads.yaml is 1.3 MB,
+      # kueue.x-k8s.io_clusterqueues.yaml is 88 KB — both comfortably over the
+      # 262144-byte last-applied-configuration annotation limit that client-side
+      # apply would try to store, so client-side apply would hard-fail on these CRDs
+      # the same way it did for cert-manager's and kube-prometheus-stack's.
+      - ServerSideApply=true

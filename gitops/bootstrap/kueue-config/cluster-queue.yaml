@@ -1,0 +1,48 @@
+# Cluster-wide ResourceFlavor + ClusterQueue for the whole platform. Cluster-scoped
+# CRs (same reasoning as gitops/bootstrap/cluster-issuer/cluster-issuer.yaml) —
+# depends on the CRDs gitops/bootstrap/kueue.yaml installs, so this lives in its own
+# Application (kueue-config-app.yaml) with its own comparison/apply cycle, not bundled
+# into bootstrap's own sync. See docs/decisions.md, Kueue section, for the full
+# reasoning — the short version is Section 23's cert-manager/ClusterIssuer story
+# repeating for Kueue's CRDs.
+#
+# apiVersion kueue.x-k8s.io/v1beta2 — confirmed against the actual example manifest
+# shipped in the v0.19.1 git tag
+# (site/static/examples/admin/single-clusterqueue-setup.yaml), not the installation
+# doc's prose, which still shows v1beta1 in places. v1beta2 also matches what Verda's
+# own Instant Clusters Kueue doc references.
+#
+# ResourceFlavor left empty ({}) deliberately: an empty spec matches any node with no
+# labels/taints required, which is correct for this cluster — three general-purpose
+# CPU.16V.64G RKE2 nodes (docs/decisions.md Section "cluster fell back to
+# CPU.16V.64G"), no GPU nodes, no node pools to distinguish between. A non-empty
+# spec (nodeLabels/tolerations) would be modeling a heterogeneity this cluster
+# doesn't have.
+#
+# Quota deliberately small (cpu: "2" against ~48 allocatable cores across the 3-node
+# cluster) so the demo in gitops/platform/kueue-demo/ actually exercises queueing —
+# a quota sized to "whatever fits" would make every demo Job admit immediately and
+# prove nothing. memory quota (2Gi) set generously above what the demo needs (2 jobs
+# x 512Mi = 1Gi) so memory is never the binding resource — the point of the demo is
+# to show CPU-quota-driven FIFO queueing unambiguously, not two constraints
+# interacting.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: default-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue
+spec:
+  namespaceSelector: {} # match all namespaces
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: default-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: "2"
+            - name: "memory"
+              nominalQuota: "2Gi"

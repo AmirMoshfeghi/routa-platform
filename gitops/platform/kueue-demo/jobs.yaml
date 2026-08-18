@@ -1,0 +1,71 @@
+# Two Jobs, same shape, submitted together — the demonstration payload for the
+# ClusterQueue quota in gitops/bootstrap/kueue-config/cluster-queue.yaml (cpu: "2").
+# Each Job requests 2 CPU total (parallelism 2 x 1 CPU/pod); job-a fits the quota
+# exactly and Kueue admits it immediately, job-b's combined demand (4 CPU) exceeds
+# the 2 CPU quota so it stays suspended — QuotaReserved=False — until job-a completes
+# (~60s) and releases its quota, then job-b is admitted in turn. Verify with:
+#   kubectl get workloads -n kueue-demo
+#   kubectl describe workload -n kueue-demo <job-b's workload> | grep -A5 Conditions
+#
+# Static `name`, not `generateName` — the upstream sample
+# (kueue.sigs.k8s.io/docs/tasks/run/jobs/) uses generateName for imperative
+# `kubectl create`, but Argo CD needs a stable name to track and re-apply this
+# resource idempotently; a Job's pod template is immutable after creation, so a
+# fixed name only matters if the spec below ever changes (see ttlSecondsAfterFinished
+# note).
+#
+# ttlSecondsAfterFinished: 300 — cleans the Job up automatically 5 minutes after
+# completion so this demo doesn't leave permanently-Completed Jobs sitting in the
+# namespace, and so a `git push` that intentionally changes this file later doesn't
+# hit "Job.spec is immutable" against a Job Argo still thinks it owns.
+#
+# Image/command match kueue.sigs.k8s.io/docs/tasks/run/jobs/'s own sample verbatim
+# (registry.k8s.io/e2e-test-images/agnhost:2.53, sleep 60) rather than substituting a
+# different image — reusing the doc's own verified example over picking a new one.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kueue-demo-job-a
+  namespace: kueue-demo
+  labels:
+    kueue.x-k8s.io/queue-name: user-queue
+spec:
+  parallelism: 2
+  completions: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53
+          command: ["/bin/sh"]
+          args: ["-c", "sleep 60"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: "256Mi"
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kueue-demo-job-b
+  namespace: kueue-demo
+  labels:
+    kueue.x-k8s.io/queue-name: user-queue
+spec:
+  parallelism: 2
+  completions: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53
+          command: ["/bin/sh"]
+          args: ["-c", "sleep 60"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: "256Mi"
+      restartPolicy: Never

@@ -6,3 +6,4 @@ resources:
   - kube-prometheus-stack/application.yaml
   - harbor/application.yaml
   - demo-app/application.yaml
+  - kueue-demo/application.yaml

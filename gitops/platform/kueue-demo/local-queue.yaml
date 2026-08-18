@@ -1,0 +1,10 @@
+# v1beta2 — see gitops/bootstrap/kueue-config/cluster-queue.yaml for the version
+# provenance note (chart docs' prose says v1beta1 in places; the actual v0.19.1
+# example manifests use v1beta2).
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: user-queue
+  namespace: kueue-demo
+spec:
+  clusterQueue: cluster-queue
