@@ -2681,3 +2681,273 @@ chart defaults preserved); `certSource: secret` produced exactly the intended
 all still exit 0. Full `REPLACE_ME` sweep across `gitops/` — still zero.
 
 Nothing installed, committed, or pushed.
+
+---
+
+## 31. demo-app image: arm64 build, amd64 nodes (2026-08-18)
+
+After pushing `harbor.95.133.252.180.sslip.io/routa/demo-app:v1`, the Deployment
+failed with `ImagePullBackOff` / `no match for platform in manifest: not found`.
+
+**Not a registry, TLS, or auth problem** — all of that worked: pull was anonymous
+against the public `routa` project exactly as designed (Section 31 title aside, no
+`imagePullSecret` needed, per Section 30's own note), TLS from Section 30 validated
+fine, Harbor served the manifest without complaint. The manifest just had no variant
+for the platform being pulled.
+
+**Root cause:** built on Apple Silicon (arm64) and pushed as-is; the three RKE2 nodes
+are amd64 (`CPU.16V.64G`, Section 14). A single-arch arm64 image has nothing for an
+amd64 kubelet to pull.
+
+**Fix:** `docker build --platform linux/amd64 -t harbor.95.133.252.180.sslip.io/routa/demo-app:v1 .`, re-push, same tag. Pod scheduled and pulled cleanly after.
+
+Nothing else about the Harbor/TLS/GitOps path needed touching.
+
+---
+
+## 32. Argo CD SSO via Dex + GitHub OAuth (2026-08-18)
+
+Plan and manifests only in this section — the Secret creation is imperative and run
+by the operator directly, never through Git. Nothing pushed or committed as part of
+this entry.
+
+### 32.1 Callback path — verified against current docs, matches what's already registered
+
+`/api/dex/callback` confirmed against
+`argo-cd.readthedocs.io/en/stable/operator-manual/user-management/` as the fixed
+path Argo CD always uses for OAuth2 connectors — there is no `redirectURI` field to
+configure; Argo derives it from `configs.cm.url` (Section 20.6) automatically. The
+GitHub OAuth App's registered redirect URI,
+`https://argocd.95.133.252.180.sslip.io/api/dex/callback`, is already correct. No
+change needed on the GitHub side.
+
+### 32.2 Config location — traced in the pinned chart, not assumed
+
+Two candidate locations existed in the chart's values schema, and only one is
+correct: a top-level `dex:` block (chart line 1142) and `configs.cm` (chart line
+191). Read both directly. The top-level `dex:` block is Dex-server *runtime*
+settings only — `enabled`, `resources`, `metrics` — and has no field for connector
+configuration at all. The actual Dex connector config lives under `configs.cm`, as
+the literal dotted key `"dex.config"` (chart's own commented-out example, lines
+227-238) — the same top-level map this repo's `configs.cm.url` already lives in
+(Section 21). Confirmed by rendering the real `argocd-cm` ConfigMap against the
+pinned chart + our values and finding `dex.config` present with exactly the intended
+content, byte for byte.
+
+### 32.3 `useLoginAsID` — the non-obvious flag that makes username-based RBAC possible at all
+
+Without an org/team to scope the GitHub connector against, the natural read is "just
+match my GitHub username in RBAC." That silently doesn't work by default: traced
+Dex's own source (`connector/github/github.go`, dexidp/dex) and confirmed the `sub`
+claim Argo's RBAC evaluates is GitHub's **internal numeric user ID** unless
+`useLoginAsID: true` is set, which makes `identity.UserID = user.Login` — the actual
+handle. Separately confirmed against
+`argo-cd.readthedocs.io/en/stable/operator-manual/rbac/` that `sub` is always
+examined for `g,` subject matching "in addition to" whatever `scopes` configures, so
+this flag is what makes `g, AmirMoshfeghi, role:admin` resolve to anything at all —
+without it, that line would silently never match, and the more common real-world
+pattern (matching on `email` instead) was deliberately not used here since it would
+put a personal email address in a policy.csv line in a public repository, when the
+GitHub username is already public in this repo's own remote URL.
+
+### 32.4 No `orgs:` — a real access consequence, not a missing detail
+
+No org/team exists to scope the connector against, so `orgs:` is omitted entirely.
+**Consequence, stated plainly:** any GitHub account can complete the OAuth login —
+authentication is open to the internet, not gated to a specific organization. This
+is exactly why `configs.rbac.policy.default: role:readonly` is not left empty:
+authentication succeeding must not by itself imply any access. `role:readonly` is
+one of Argo CD's built-in roles (no `p,` lines needed to define it) and grants
+view-only access; only the one `g,` binding below grants anything more.
+
+### 32.5 The RBAC mapping — proposed, not yet confirmed
+
+```
+policy.default: role:readonly
+policy.csv: |
+  g, AmirMoshfeghi, role:admin
+```
+
+`AmirMoshfeghi` is inferred from this repo's own `repoURL`
+(`gitops/bootstrap/argocd.yaml`), **not independently confirmed as a real GitHub
+login via any API call**. Presented for the operator's explicit confirmation before
+applying, per instruction. Worth noting the failure mode if it's wrong: a mistyped
+username here fails safe, not open — nobody gets `role:admin`, everyone (including
+the operator) is stuck at `role:readonly` until corrected. Not a lockout risk beyond
+"go fix the policy.csv line and re-sync," since Argo's own local `admin` account
+(Section 20.6) remains a separate, always-available fallback login independent of
+SSO entirely.
+
+### 32.6 The Secret — imperative, never through Git
+
+```bash
+kubectl create secret generic argocd-github-oauth \
+  --namespace argocd \
+  --from-literal=dex.github.clientSecret="$ARGOCD_GITHUB_CLIENT_SECRET"
+
+kubectl label secret argocd-github-oauth \
+  --namespace argocd \
+  app.kubernetes.io/part-of=argocd
+```
+
+Two commands, not one: `kubectl create secret generic` has no built-in `--labels`
+flag in the kubectl versions this was verified against, so the label is applied as a
+separate step rather than assumed available. The label is not cosmetic — Argo CD
+only honors `$<secret-name>:<key>` references (confirmed against
+`argo-cd.readthedocs.io/en/stable/operator-manual/user-management/`) for Secrets
+carrying `app.kubernetes.io/part-of: argocd`; without it, the reference in
+`dex.config` resolves to nothing and Dex fails to start with a config error, not a
+silent skip. Deliberately a **separate** Secret (`argocd-github-oauth`), not an
+addition to the chart's own `argocd-secret` — that Secret is managed by Argo CD
+itself (session signing key, admin password hash) and this avoids hand-editing it.
+
+### 32.7 Verification
+
+- `helm template` against the actual pulled `argo-cd-10.4.0.tgz` chart, not just
+  parsed values — rendered both `templates/argocd-configs/argocd-cm.yaml` and
+  `templates/argocd-configs/argocd-rbac-cm.yaml` and confirmed `dex.config`,
+  `policy.default`, and `policy.csv` all appear exactly as intended in the real
+  ConfigMaps Argo CD will actually read.
+- Re-checked live cluster state before writing anything: Argo's own Ingress still
+  carries `cert-manager.io/cluster-issuer: letsencrypt-staging`, matching the
+  committed file — no undocumented drift to account for.
+- Full repo sweep for `clientSecret` — the only two matches are the reference syntax
+  and its explanatory comment; no secret *value* appears anywhere.
+- Re-built every kustomize root in the repo — all still exit 0. Full `REPLACE_ME`
+  sweep — still zero.
+
+Nothing installed, committed, or pushed. The Secret command above is for the
+operator to run directly, outside this session's write path, per instruction.
+
+---
+
+## 33. SSO implemented on Rancher and Argo CD (2026-08-18)
+
+Section 32 was the Argo CD SSO plan; this records what actually got built and
+applied for both Rancher and Argo CD, and the one live snag hit doing it.
+
+### Argo CD — GitHub OAuth via Dex
+
+Built per Section 32's plan, applied as planned. The two-candidate config-location
+question resolved to `configs.cm`'s `"dex.config"` key, not the chart's top-level
+`dex:` block (Dex-server runtime settings only, no connector field). `useLoginAsID:
+true` confirmed required, not decorative: without it, Dex's `sub` claim is GitHub's
+numeric user ID, not the username, so the RBAC binding would have silently never
+matched — no error, just permanent `role:readonly` for an admin who'd assume the
+binding was working. Client secret referenced via
+`$argocd-github-oauth:dex.github.clientSecret`, a separate Secret from the
+chart-managed `argocd-secret`, labeled `app.kubernetes.io/part-of=argocd` — Argo only
+honors `$secret:key` syntax for Secrets carrying that label; missing it is a silent
+no-op, not an error. RBAC: `policy.default: role:readonly` (authentication alone
+never implies access) plus one explicit `g, AmirMoshfeghi, role:admin` binding.
+
+### Rancher — native GitHub auth provider
+
+Separate GitHub OAuth App from Argo CD's, with its own callback requirement — Rancher
+and Dex don't share one. An initial guess at the callback path assumed a
+`/verify-auth` suffix, carried over from a different Rancher version; wrong.
+Rancher's own auth-provider setup screen displays the actual expected callback URL
+directly — `https://rancher.95.133.252.175.sslip.io`, no path suffix at all — so the
+fix was reading what Rancher itself showed rather than trusting a remembered pattern.
+
+One further snag on first login: GitHub returned "redirect_uri is not associated
+with this application." Traced to the registered callback URL not being
+byte-for-byte identical to what Rancher actually sent (a scheme/trailing-slash-level
+mismatch, not a wrong host). Fixed by re-entering the callback URL in the GitHub
+OAuth App exactly as Rancher's own UI displayed it, rather than retyping it from
+memory.
+
+Both are live: GitHub login works end-to-end on Rancher
+(`https://rancher.95.133.252.175.sslip.io`) and Argo CD
+(`https://argocd.95.133.252.180.sslip.io`).
+
+---
+
+## 34. Argo CD flipped to Let's Encrypt production (2026-08-18)
+
+Same class of issue as Section 18 (Rancher) and Section 30 (Harbor): Argo CD's
+Ingress was still serving the Let's Encrypt staging cert, confirmed via `openssl`
+(`issuer CN=(STAGING) Ersatz Emmer YR2`).
+
+**The key, confirmed rather than assumed to be the same shape as Rancher/Harbor**:
+`server.ingress.annotations["cert-manager.io/cluster-issuer"]` in
+`gitops/bootstrap/argocd-values.yaml` — the same annotation-driven mechanism as
+Harbor (Section 30), not a chart-native `letsEncrypt.environment` toggle the way
+Rancher's chart has one. Flipped `letsencrypt-staging` → `letsencrypt-production`.
+
+**Secret name confirmed two ways, not one**: read from the file's own existing
+comment (`argocd-server-tls`, originally documented when `server.ingress.tls: true`
+was first set — Section 21.2) and cross-checked live —
+`kubectl get secret -n argocd` shows `argocd-server-tls` exists, 10h old, matching.
+
+**§18 applies here too, exactly as flagged.** Changing the annotation alone does not
+force re-issuance — cert-manager will not re-issue while a valid cert already sits
+in `argocd-server-tls`. **Not deleted as part of this change** — this is a values
+edit only, per instruction. The operator's next step, after this pushes and Argo
+re-syncs:
+
+```bash
+kubectl delete secret argocd-server-tls -n argocd
+```
+
+That forces a fresh `CertificateRequest` against `letsencrypt-production`. Until
+that secret is deleted, Argo CD will keep serving the staging cert indefinitely
+despite the Issuer reference already having changed — the same trap, not a new one.
+
+**Verification**: `helm template` against the actual pulled `argo-cd-10.4.0.tgz`
+chart with the updated values, `--show-only templates/argocd-server/ingress.yaml` —
+confirmed both fields in the real rendered object:
+`cert-manager.io/cluster-issuer: "letsencrypt-production"` and
+`tls[0].secretName: argocd-server-tls` (unchanged, as expected — only the issuer
+reference changes, not the secret name). Re-built every kustomize root in the
+repo — all still exit 0. Full `REPLACE_ME` sweep — still zero.
+
+Nothing pushed as part of this change.
+
+---
+
+## 35. `project.yaml` sourceRepos tightened from `"*"` (2026-08-18)
+
+The TODO flagged since Section 22.3 and never circled back to (confirmed still open
+during last night's pre-submission sweep). Closed now: `sourceRepos` on the
+`routa-platform` AppProject tightened from `["*"]` to the exact list this platform
+uses.
+
+**Grepped, not compiled from memory.** Every `repoURL:` field across `gitops/`,
+structurally parsed from each `Application` object's `spec.source`/`spec.sources`
+(not a text grep, which produces false positives — see the verification note below)
+gives exactly five distinct sources:
+
+```
+https://github.com/AmirMoshfeghi/routa-platform      # this repo — root apps, $values refs
+https://argoproj.github.io/argo-helm                  # argo-cd chart
+quay.io/jetstack/charts                                # cert-manager chart, OCI
+https://prometheus-community.github.io/helm-charts    # kube-prometheus-stack chart
+https://helm.goharbor.io                               # harbor chart
+```
+
+**Two sources deliberately NOT added, despite being reasonable to expect:** Traefik's
+chart repo and Rancher's chart repo. Grepped for both — neither appears anywhere
+under `gitops/`. Traefik is deployed via RKE2's own bundled `HelmChart` CR on
+`routa-cp-1..3` (Section 20.2) and via Ansible/Helm CLI on the mgmt node (Section
+17.3); Rancher is installed entirely via Ansible on the mgmt node's k3s (Section 17).
+Neither goes through Argo CD, so neither belongs in an Argo `AppProject`'s access
+list — adding them would have been scope creep past what's actually gated here, not
+caution.
+
+**Verification, and why the naive approach was wrong.** A plain text `grep -n
+"repoURL:"` across `gitops/` produces a false positive: this very entry's own
+provenance comment in `project.yaml` contains the literal text `` `repoURL:` `` in
+markdown backticks, which a regex happily matches and mis-extracts as a value. Redid
+the check properly — `yaml.safe_load_all` every file under `gitops/`, filter to
+`kind: Application`, pull `spec.source.repoURL` or `spec.sources[].repoURL`
+structurally — and cross-referenced the resulting set against the new allowlist:
+zero used-but-not-allowed, zero allowed-but-unused. Exact match. Re-built every
+kustomize root in the repo (`bootstrap`, `bootstrap/local-path-provisioner`,
+`platform`, all three `environments/*`) — all still exit 0. Full `REPLACE_ME`
+sweep across `gitops/` — still zero.
+
+No live Application would be rejected by this tightening — confirmed by the exact
+cross-reference above, not by inspection.
+
+Nothing pushed as part of this change.

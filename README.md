@@ -3,9 +3,33 @@
 Verda Senior Platform Engineer take-home assignment: a self-hosted Kubernetes
 platform built on Verda Cloud CPU instances.
 
-**Status: scaffold only.** Nothing has been provisioned. See `docs/decisions.md` for
-the full reasoning, decision log, and current state — it is the primary artifact of
-this assignment, not this README.
+**The platform is deployed and live.** `docs/report.md` is the assignment
+deliverable — what was built, why, and what worked and didn't. `docs/decisions.md`
+is the full build log — every non-obvious decision, in order, as it was made. This
+README is orientation only; it doesn't try to compete with either.
+
+## Live
+
+| Service | URL | Auth |
+|---|---|---|
+| Rancher | https://rancher.95.133.252.175.sslip.io | GitHub OAuth (native provider) |
+| Argo CD | https://argocd.95.133.252.180.sslip.io | GitHub OAuth (Dex) |
+| Harbor | https://harbor.95.133.252.180.sslip.io | Local admin (public `routa` project — anonymous pulls) |
+
+All three on Let's Encrypt production certificates via cert-manager, not self-signed.
+
+## What's running
+
+- **Rancher**, managing the 3-server RKE2 HA control plane it imported.
+- **Argo CD**, self-managing (it deploys and reconciles its own installation via
+  Git) as an app-of-apps, with dev → staging → prod promotion via git ref and a
+  manual sync gate on prod.
+- **Harbor**, serving a real image (`demo-app`) that's been pushed and pulled
+  through it — the GitOps loop closes through infrastructure this platform built
+  itself, not an external registry.
+- **kube-prometheus-stack**, with persistent storage (not ephemeral `emptyDir`) on
+  the cluster's own default `local-path` StorageClass.
+- **GitHub SSO** on both Rancher and Argo CD.
 
 ## Architecture
 
@@ -14,12 +38,16 @@ Terraform (verda provider)  →  4 CPU VMs, public IPs, one SSH key
         ↓
 Ansible  →  OS hardening, then RKE2 install (Cilium as CNI)
         ↓
-routa-mgmt:            k3s + Rancher Manager + cert-manager
+routa-mgmt:            k3s + Rancher Manager + cert-manager, GitHub SSO
 routa-cp-1..3:         RKE2 3-server HA control plane (etcd quorum, schedulable),
-                       imported into Rancher
+                       imported into Rancher, GitHub SSO
         ↓
-Argo CD (app-of-apps)  →  kube-prometheus-stack, Harbor, demo app
-                           promoted dev → staging → prod via git ref + manual gate
+Argo CD (self-managing, app-of-apps)
+  gitops/bootstrap/    Argo CD itself, cert-manager, Let's Encrypt ClusterIssuers,
+                       local-path-provisioner — cluster-wide singletons, synced once
+                       per cluster rather than once per environment
+  gitops/platform/     kube-prometheus-stack, Harbor, demo app
+                       promoted dev → staging → prod via git ref + manual gate
 ```
 
 ## Repository layout
@@ -27,9 +55,9 @@ Argo CD (app-of-apps)  →  kube-prometheus-stack, Harbor, demo app
 | Path | Tool | Scope |
 |---|---|---|
 | `terraform/` | Terraform | Provisioning: 4 VMs, SSH key, IP outputs → Ansible inventory |
-| `ansible/` | Ansible | OS hardening, RKE2 install, kubeconfig retrieval |
+| `ansible/` | Ansible | OS hardening; RKE2 install; k3s + Rancher + cert-manager on the mgmt node; kubeconfig retrieval |
 | `gitops/` | Argo CD | Everything inside the cluster |
-| `docs/` | — | Decision log and (eventually) the assignment report |
+| `docs/` | — | `report.md` (the assignment deliverable), `decisions.md` (the full build log), `ai-usage.md` (AI-assisted engineering record) |
 
 See `CLAUDE.md` for detailed conventions and the standing rules this repo is built
 under (version pinning, docs-before-syntax, Verda MCP usage).
@@ -50,7 +78,7 @@ source ~/.config/verda/env
 verda doctor   # should be all green before doing anything else
 ```
 
-## Usage (not yet run)
+## Bootstrap procedure (for a rebuild — this has already been run once)
 
 ```bash
 # 1. Provision
@@ -63,8 +91,15 @@ terraform apply   # writes ansible/inventory/hosts.ini on success
 # 2. Configure
 cd ../ansible
 ansible-galaxy collection install -r requirements.yml
-ansible-playbook playbooks/site.yml
+ansible-playbook playbooks/site.yml   # hardening, RKE2, k3s+Rancher+cert-manager on mgmt
 
-# 3. Deliver
-kubectl apply -k gitops/bootstrap   # bootstraps Argo CD's app-of-apps
+# 3. Deliver — Argo CD has to exist before it can manage itself, so this is a
+#    one-time imperative seed followed by a declarative handoff, not a single
+#    `kubectl apply` (see docs/decisions.md Section 20.5 for why):
+kubectl create namespace argocd
+helm repo add argo https://argoproj.github.io/argo-helm && helm repo update argo
+helm install argocd argo/argo-cd \
+  --version 10.4.0 --namespace argocd \
+  -f gitops/bootstrap/argocd-values.yaml
+kubectl apply -f gitops/bootstrap/bootstrap.yaml   # Argo CD adopts itself from here
 ```
