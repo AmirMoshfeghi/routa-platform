@@ -1,11 +1,16 @@
 # See root-dev.yaml for the pattern this follows. Promotion dev -> staging is a PR
 # that bumps this Application's targetRevision (or the overlay itself), reviewed
 # like any other change.
+#
+# sync-wave: "2" — see root-dev.yaml for why (Section 27). Same reasoning applies
+# identically here: this Application must not be created before storage exists.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: routa-staging
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: routa-platform
   source:

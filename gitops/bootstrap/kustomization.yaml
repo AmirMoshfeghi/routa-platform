@@ -6,6 +6,7 @@ resources:
   - argocd.yaml
   - cert-manager.yaml
   - cluster-issuer-app.yaml
+  - local-path-provisioner-app.yaml
   - root-dev.yaml
   - root-staging.yaml
   - root-prod.yaml
@@ -17,3 +18,10 @@ resources:
 # longer part of bootstrap's own resource set. cluster-issuer-app.yaml is the
 # Application that points AT that directory as its own separate sync target. See
 # docs/decisions.md Section 23 for why this had to be split out.
+#
+# local-path-provisioner/ (the directory) is likewise not listed here for the same
+# reason — local-path-provisioner-app.yaml points at it as its own separate sync
+# target. Unlike cluster-issuer/, this one HAS its own kustomization.yaml (a patch
+# adding the default-StorageClass annotation), so Argo syncs it via Kustomize rather
+# than as a plain-manifest directory — see gitops/bootstrap/local-path-provisioner/
+# kustomization.yaml.

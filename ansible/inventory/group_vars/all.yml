@@ -31,6 +31,28 @@ rke2_cni: "cilium"
 rke2_ingress_controller:
   - traefik
 
+# --- Storage: deliberately NOT configured here — read this before assuming it's a gap ---
+# Unlike ingress-controller above, there is no RKE2 flag, no `disable` entry, and no
+# config key for storage to set in this file. Checked and confirmed 2026-08-17
+# against the exhaustive `disable` value list in
+# https://docs.rke2.io/reference/server_config: `rke2-coredns, rke2-metrics-server,
+# rke2-snapshot-controller, rke2-snapshot-controller-crd,
+# rke2-snapshot-validation-webhook` — no local-path-storage component is in that list
+# because RKE2 does not package one at all. This is not a suppressed default the way
+# the ingress controller pin above guards against; it was never a component RKE2
+# ships, unlike k3s (confirmed live: the mgmt node's k3s has a working default
+# `local-path` StorageClass with zero configuration anywhere in this repo — RKE2 is
+# the more production-oriented distribution in this family and doesn't bundle one).
+#
+# So a fresh cluster provisioned from this repo has NO default StorageClass and NO
+# storage provisioner until gitops/bootstrap/ is synced — this is by design, not an
+# oversight to fix here. Storage is provisioned declaratively via Argo CD:
+# gitops/bootstrap/local-path-provisioner-app.yaml (a pinned, vendored
+# rancher/local-path-provisioner, marked as the cluster-default StorageClass). Any
+# workload needing a PVC — Harbor is the current example — will sit `Pending` until
+# that Application has synced. See docs/decisions.md Sections 25 and 26 for the full
+# investigation and why the fix lives in gitops/ rather than here.
+
 # 3-server RKE2 HA control plane with embedded etcd (routa-cp-1/2/3), not a single
 # server + agents. All three are full servers and all three are schedulable for
 # regular workloads — no control-plane taint. Config keys verified 2026-08-17 against

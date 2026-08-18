@@ -3,11 +3,19 @@
 # Deliberately NOT auto-synced: prod promotion is "someone clicks Sync in the Argo CD
 # UI (or `argocd app sync routa-prod`) after reviewing the diff", not automatic on
 # merge. dev/staging trade that safety for speed; prod does not.
+#
+# sync-wave: "2" — see root-dev.yaml for why (Section 27). This governs when
+# BOOTSTRAP creates the routa-prod Application object, which is independent of
+# routa-prod's own manual-sync-only policy above (that policy only affects whether
+# routa-prod, once it exists, syncs itself automatically — not when bootstrap
+# creates it in the first place). Both apply without conflict.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: routa-prod
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: routa-platform
   source:

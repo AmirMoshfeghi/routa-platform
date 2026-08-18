@@ -4,11 +4,25 @@
 #
 # ROUTA_REPO_URL — see gitops/bootstrap/argocd.yaml for the full rebuild note; this
 # is one of 6 repoURL occurrences tagged with this marker across the repo.
+#
+# sync-wave: "2" — added 2026-08-17 (docs/decisions.md Section 27) after confirming
+# this Application was unannotated and therefore implicitly wave "0", the SAME wave
+# as local-path-provisioner-app.yaml. Same wave meant no ordering guarantee: nothing
+# stopped this Application (and everything it syncs beneath it — Harbor's PVC among
+# them) from being created before the storage provisioner existed to satisfy it, on
+# a from-scratch bootstrap. Wave "2" means bootstrap will not create this
+# Application until BOTH wave 0 (local-path-provisioner, cert-manager, argocd) AND
+# wave 1 (cluster-issuer) are Synced and Healthy — a deliberately conservative
+# choice: this environment's platform apps don't all need cluster-issuer yet, but
+# waiting for the whole of bootstrap's day-0 infrastructure is a simpler, more
+# robust invariant than hand-tuning a separate wave number per actual dependency.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: routa-dev
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: routa-platform
   source:

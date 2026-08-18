@@ -1,0 +1,56 @@
+# The RKE2 cluster's missing default StorageClass, fixed. Root cause and full
+# investigation: docs/decisions.md Section 25. Short version: this was never
+# disabled by anything in this repo — RKE2 simply does not bundle a local-path
+# provisioner the way k3s does, and nothing in ansible/roles/rke2-server or
+# inventory/group_vars/all.yml ever claimed otherwise.
+#
+# Cluster-singleton, so — same reasoning as cert-manager.yaml and
+# cluster-issuer-app.yaml — this lives in gitops/bootstrap/, not gitops/platform/.
+# StorageClass, ClusterRole and ClusterRoleBinding are all cluster-scoped; three
+# environment-overlay Applications would collide over one set of them the same way
+# they would over cert-manager's CRDs (Section 20.3).
+#
+# No CRD dependency here, unlike cert-manager/cluster-issuer (Section 23) — every
+# resource this Application manages (Namespace, ServiceAccount, Role/ClusterRole,
+# RoleBinding/ClusterRoleBinding, Deployment, StorageClass, ConfigMap) is a built-in
+# Kubernetes type, always registered on any API server. No sync-wave ordering
+# relative to cert-manager/cluster-issuer is needed FOR THAT REASON, and no
+# ServerSideApply either — this manifest is small; there is no 262144-byte
+# annotation problem to solve (Section 21.4/24), so adding that option would be
+# fixing a failure mode that doesn't exist here.
+#
+# sync-wave IS needed for a different reason, added 2026-08-17 (Section 27): the
+# root-dev/staging/prod Applications — and everything they in turn sync, including
+# Harbor's PVC — were unannotated and therefore ALSO implicitly wave "0", the same
+# wave as this Application. Same wave means no ordering guarantee between them:
+# nothing stopped Harbor's PVC from being requested before the provisioner existed
+# to satisfy it, on a from-scratch bootstrap. Explicit "0" here (matching the
+# previous implicit default, made explicit rather than relied upon) plus pushing
+# root-dev/staging/prod to wave "2" (see those files) closes that gap: bootstrap
+# will not even CREATE the root Applications until this one reports Healthy — and
+# only once a root Application is created does it, in turn, sync Harbor. See
+# docs/decisions.md Section 27 for why annotating Harbor/kube-prometheus-stack
+# directly would NOT have worked: their sync-wave scope is their own Application's,
+# not bootstrap's, so a wave number on them has no relationship to this one.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: local-path-provisioner
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: routa-platform
+  source:
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+    targetRevision: main
+    path: gitops/bootstrap/local-path-provisioner
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: local-path-storage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

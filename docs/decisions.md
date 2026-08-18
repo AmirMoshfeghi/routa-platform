@@ -2107,3 +2107,354 @@ and `targetRevision` via JSON patches, and a patch touching nearby paths is exac
 the kind of change that could silently clobber an unrelated sibling field if the
 patch path were slightly wrong. It didn't. Full `REPLACE_ME` sweep across `gitops/`
 still clean. Nothing installed, committed, or pushed.
+
+---
+
+## 25. Root cause found: RKE2 never bundled a default StorageClass — this was never disabled (2026-08-17)
+
+Reported symptom: all Harbor PVCs `Pending` ("no storage class is set"), no PVCs at
+all for monitoring (Prometheus on ephemeral `emptyDir`), no StorageClass, no
+local-path pods anywhere in `kube-system`. The investigation request assumed RKE2
+normally ships `rke2-local-path-storage` enabled and asked whether our config turned
+it off. **That premise doesn't hold — worth stating plainly rather than quietly
+working around it**, because the actual fix is different depending on which is true.
+
+### 25.1 What was actually checked, and what it shows
+
+`ansible/roles/rke2-server` and `inventory/group_vars/all.yml` were searched for any
+`disable:` directive or local-path reference — there is none. This is not a case of
+finding a suppressed setting; there was never a setting to suppress.
+
+Confirmed against the primary source, not a summary: `docs.rke2.io/reference/
+server_config`'s `disable` flag documentation, verified 2026-08-17, lists its entire
+valid value set verbatim: *"Do not deploy packaged components and delete any deployed
+components (valid items: rke2-coredns, rke2-metrics-server,
+rke2-snapshot-controller, rke2-snapshot-controller-crd,
+rke2-snapshot-validation-webhook)"* — **no local-path-storage component is in that
+list at all**, because RKE2 does not package one. (Consistent with the `ingress-
+controller` flag being a *separate*, dedicated flag rather than a `disable` value,
+which Section 20.2 already established — RKE2 groups its packaged components
+differently depending on the component, and storage isn't grouped in with `disable`
+because it was never grouped in as a component in the first place.)
+
+**Corroborated live**, not just from docs: the mgmt node's k3s cluster — a genuinely
+different distro, provisioned independently — has a `local-path (default)`
+StorageClass with provisioner `rancher.io/local-path`, live and working, with no
+extra configuration from this repo at all:
+
+```
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      AGE
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   5h18m
+```
+
+That confirms the actual distinction: **k3s bundles a default StorageClass out of the
+box; RKE2 — described in its own ecosystem as the more production-oriented
+distribution — deliberately does not.** This was true on day one of this cluster; it
+is not a regression, and nothing in this repo turned it off. Worth a note on how this
+was missed until now: the exact `kube-system` HelmChart listing that would have shown
+this absence was already captured once, in Section 20.2's ingress investigation — it
+simply wasn't looked at with storage in mind at the time.
+
+### 25.2 The fix — and why "enable it via RKE2 config" was never actually an option
+
+Because there's no `disable` entry to omit and no RKE2-native flag to flip (unlike
+`ingress-controller`, storage has no equivalent toggle), the Ansible/RKE2-config route
+named as option 1 in the request isn't just less clean than the alternative — it
+doesn't exist. The only real mechanism is deploying a provisioner as a workload,
+which is also exactly what this repo's own stated division of labor already calls
+for: "gitops/ Everything inside the cluster, via Argo CD app-of-apps" (CLAUDE.md).
+
+Vendored the upstream `rancher/local-path-provisioner` deploy manifest — the same
+provisioner k3s uses internally — pinned at `v0.0.37` (latest stable,
+github.com/rancher/local-path-provisioner/releases, verified 2026-08-17):
+
+```
+gitops/bootstrap/local-path-provisioner/
+  local-path-storage.yaml     vendored upstream manifest, one deliberate edit (25.3)
+  kustomization.yaml          patch: is-default-class annotation on the StorageClass
+gitops/bootstrap/local-path-provisioner-app.yaml   wrapping Application
+gitops/bootstrap/kustomization.yaml                (modified) wires the app in
+```
+
+**Cluster singleton, so `gitops/bootstrap/`, not `gitops/platform/`** — same reasoning
+as `cert-manager.yaml` and `cluster-issuer-app.yaml` (Section 20.3): `StorageClass`,
+`ClusterRole`, and `ClusterRoleBinding` are all cluster-scoped, and three
+environment-overlay Applications would collide over one set of them.
+
+**No sync-wave, no `ServerSideApply`, no `SkipDryRunOnMissingResource`** — deliberately
+absent, not overlooked. Unlike cert-manager/ClusterIssuer (Section 23), nothing this
+Application manages is a CRD or depends on one; `Namespace`, `ServiceAccount`,
+`Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding`, `Deployment`,
+`StorageClass`, `ConfigMap` are all built-in types on every API server, so there is no
+ordering race of the kind Sections 23/24 had to solve. And unlike kube-prometheus-
+stack (Section 24), this manifest is small — no 262144-byte annotation risk. Adding
+either option here would be applying a fix for a failure mode that doesn't exist on
+this resource, the same caution already named in Sections 23.3 and 24.
+
+### 25.3 Vendoring discipline: patch what's addressable, edit what isn't, and say which is which
+
+**Step 3 of the request — mark the StorageClass as cluster-default —** done via a
+genuine Kustomize structured-field patch (`storageclass.kubernetes.io/is-default-class:
+"true"`), not a hand-edit of the vendored file. That's the normal, correct way to
+customize a vendored resource: the upstream file stays a clean, diffable copy of its
+source, and the customization is visible as its own patch.
+
+**One thing the patch mechanism genuinely cannot reach**, found while vendoring:
+upstream's `local-path-config` ConfigMap embeds a full Pod manifest as a YAML string
+value (`data.helperPod.yaml`) — opaque text from Kustomize's perspective, not a
+structured field, so no patch path can address the `image:` line inside it. That
+embedded Pod spec pins `docker.io/library/busybox` with **no tag** (implicit
+`latest`), which conflicts with CLAUDE.md rule 2. Fixed by directly editing that one
+line in the vendored copy — a deliberate, narrow exception to "never hand-edit a
+vendored file," made because the alternative (a giant strategic-merge patch
+reproducing the entire string value just to change one substring) would be far less
+readable than the edit itself, not more disciplined. Pinned to `busybox:1.38.0`
+(latest stable, verified 2026-08-17). The file's own header comment names this as the
+one deliberate deviation from upstream, so a future re-vendor pass knows exactly what
+to re-apply rather than diffing the whole file blind.
+
+### 25.4 Verification (rendered, every level: the sub-kustomization, the wrapping app, and every root)
+
+- `kubectl kustomize gitops/bootstrap/local-path-provisioner` — exit 0. Parsed with
+  `yaml.safe_load_all` (not a text-search) to confirm exactly the 9 expected
+  resources render with their correct names, the `StorageClass` carries
+  `storageclass.kubernetes.io/is-default-class: "true"`, and the helper-pod image
+  line reads `docker.io/library/busybox:1.38.0`.
+- `kubectl kustomize gitops/bootstrap` — exit 0; `local-path-provisioner` appears as
+  an `Application` alongside the other seven bootstrap resources, fields checked
+  directly (`path: gitops/bootstrap/local-path-provisioner`,
+  `destination.namespace: local-path-storage`).
+- Re-built every other kustomize root in the repo — `gitops/bootstrap/cluster-issuer`
+  (still fails as expected: no `kustomization.yaml`, by design, Section 23),
+  `gitops/platform`, and all three `gitops/environments/*` — exit 0 on everything
+  that's supposed to build via Kustomize.
+- Full `REPLACE_ME` sweep across `gitops/` — still zero.
+
+Nothing installed, committed, or pushed. Once this syncs, Harbor's already-defined
+PVCs should bind against the new default StorageClass with no Harbor-side change
+needed — its `values.yaml` never specified a storage class, so it was always relying
+on a cluster default that didn't exist until now.
+
+### 25.5 Flagged, not decided: Prometheus on `emptyDir`
+
+Per the request, this is a decision to surface, not one to make unilaterally.
+`kube-prometheus-stack`'s current `values.yaml` sets no persistence, so Prometheus
+(and Alertmanager) run on ephemeral storage — all metrics history and alert state is
+lost on every pod restart or reschedule, whether or not a StorageClass exists to use.
+Adding persistence now is a small, well-scoped `values.yaml` change (a
+`prometheus.prometheusSpec.storageSpec` / `alertmanager.alertmanagerSpec.storage`
+block referencing the new `local-path` default class) — genuinely optional for what
+the assignment is grading, and not implemented in this step.
+
+---
+
+## 26. Storage fix, split by risk: Argo for the live cluster, documentation for Ansible (2026-08-17)
+
+Follow-up to Section 25. The instruction was to fix both the live cluster
+(non-disruptively) and the reproducibility gap (in Ansible). This section is about
+*how* the Ansible half was actually done, because the obvious reading of that
+instruction — "update the RKE2 disable list" — turned out not to be executable, and
+the real alternative turned out to be a bigger decision than a config tweak.
+
+### 26.1 Re-stated plainly: there is nothing to update in RKE2's `disable` list
+
+Section 25.1 already established this, so this is a restatement, not a new finding:
+RKE2's `disable` flag has a fixed, exhaustive value set — `rke2-coredns,
+rke2-metrics-server, rke2-snapshot-controller, rke2-snapshot-controller-crd,
+rke2-snapshot-validation-webhook` (docs.rke2.io/reference/server_config, verified
+2026-08-17) — and local-path-storage was never a member of it. "Update the disable
+list" cannot be executed literally because the setting doesn't exist. Worth saying
+again briefly here because the alternative — quietly inventing a config change that
+*looks* like a fix without doing anything — would be worse than the gap it claims to
+close: a future reader trusting that comment would believe RKE2 has a storage toggle
+it doesn't have.
+
+### 26.2 A real mechanism exists — checked, and deliberately not used
+
+While confirming 26.1, found that RKE2 does have a genuine addon mechanism:
+`/var/lib/rancher/rke2/server/manifests/`, documented as applied "both on startup and
+when the file is changed on disk," and confirmed to be literally how RKE2 deploys its
+own packaged components (coredns, metrics-server, the ingress controller) internally.
+Dropping a pinned local-path-provisioner manifest there via Ansible would have been a
+genuine RKE2-native answer to "fix in Ansible for reproducibility" — not a
+documentation stand-in.
+
+Two things ruled it out for this pass, both surfaced during the check rather than
+assumed:
+
+- **A live-cluster risk the docs undersell.** Live-reapply-on-change is documented,
+  but open upstream issues — `rancher/rke2#6830` ("Manifest folder behaviour vs
+  documentation") and `#5481` ("Static manifests are not automatically reapplied") —
+  suggest real-world behavior doesn't always match what's documented. Exactly the
+  kind of gap this repo has hit before (Section 12's group_vars bug, Section 21.3's
+  undocumented sync-wave). Not something to test against a live 3-node etcd control
+  plane holding real workloads, which is precisely the caution the request already
+  asked for.
+- **A real design decision, not a config tweak.** Using this mechanism on a rebuild
+  would mean RKE2 seeds the provisioner at first boot and Argo CD's
+  `local-path-provisioner-app.yaml` later adopts the same objects declaratively — a
+  coherent pattern (the same "seed once, then hand off to declarative management"
+  shape already used for Argo CD's own self-management, Section 20.4/21.2) but a
+  bigger architectural choice than "update a setting," and worth the operator's
+  explicit call rather than a default I picked silently.
+
+Offered both paths explicitly; the operator chose the smaller, safer one.
+
+### 26.3 What was actually done in Ansible
+
+`ansible/inventory/group_vars/all.yml` gets a documentation-only addition, placed
+immediately after the `rke2_ingress_controller` block it's structurally parallel to
+(same "here's a default that needs a deliberate decision" shape as that block,
+opposite conclusion): a clear, provenance-cited note stating RKE2 packages no storage
+component, that this is confirmed against the same `disable` list already cited in
+Section 25.1, that the mgmt node's k3s having a StorageClass with zero configuration
+is the live corroboration, and that storage is provisioned via
+`gitops/bootstrap/local-path-provisioner-app.yaml` — pointing at Sections 25 and 26
+for anyone who finds this note while investigating the same symptom Section 25
+started from. No functional RKE2 config changed; nothing here affects a real install.
+
+The actual reproducibility guarantee is structural, not a config toggle: any fresh
+cluster built from this repo already requires running the Argo bootstrap sequence
+(Section 20.5) for *anything* under `gitops/` to exist — Rancher's import, the demo
+app, monitoring, all of it. Storage isn't a special case needing its own separate
+Ansible-side mechanism; it's one more thing that arrives via the bootstrap sequence
+that already has to run. The comment's job is narrower and more honest: make sure the
+NEXT person reading `all.yml` doesn't have to re-run this entire investigation to
+learn that.
+
+### 26.4 The live cluster — unchanged from Section 25, re-verified
+
+No changes to `gitops/bootstrap/local-path-provisioner/` or
+`gitops/bootstrap/local-path-provisioner-app.yaml` this step — Section 25's fix was
+already correct. Re-verified rather than assumed, per instruction to "fetch current
+docs" and "verify by rendering" again:
+
+- `v0.0.37` reconfirmed as the latest stable `rancher/local-path-provisioner` release
+  (github.com/rancher/local-path-provisioner/releases, re-checked 2026-08-17).
+- `storageclass.kubernetes.io/is-default-class: "true"` reconfirmed as the correct,
+  canonical annotation directly against
+  kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/ — this is
+  core Kubernetes behavior, not something specific to local-path-provisioner's own
+  docs, which is why its README doesn't document it directly.
+- Re-rendered `gitops/bootstrap/local-path-provisioner` and confirmed both the
+  `StorageClass` annotation and the `busybox:1.38.0` pin (Section 25.3) are still
+  exactly as vendored — nothing had drifted.
+
+### 26.5 Verification
+
+- `ansible mgmt -i ansible/inventory/hosts.ini -c local -m debug` — rendered
+  `rke2_ingress_controller`, `rke2_cni`, and `rke2_version` from `all.yml` after the
+  comment addition; all three resolve unchanged. A pure-comment change shouldn't be
+  able to break variable resolution, but per the rule-4 discipline established in
+  Section 12, "shouldn't" is checked, not assumed.
+- `ansible-playbook playbooks/site.yml --syntax-check` — clean, from the `ansible/`
+  basedir.
+- `kubectl kustomize` on every kustomize root in the repo (`gitops/bootstrap`,
+  `gitops/bootstrap/local-path-provisioner`, `gitops/platform`, and all three
+  `gitops/environments/*`) — exit 0 on all six.
+- Full `REPLACE_ME` sweep across `gitops/` — still zero.
+
+Nothing installed, committed, or pushed. Prometheus's `emptyDir` persistence
+question (Section 25.5) is unchanged and still open — explicitly the operator's call,
+not addressed in this step either.
+
+---
+
+## 27. The storage fix wasn't actually ordered relative to its consumers (2026-08-17)
+
+A fair challenge to Section 25/26's fix: those sections established that a rebuild
+*eventually* gets storage via the Argo bootstrap sequence, but never established that
+it gets it *before* Harbor and kube-prometheus-stack request PVCs. Those are
+different claims, and only the second one actually prevents reproducing the Pending-
+PVC symptom Section 25 investigated.
+
+### 27.1 What was actually true before this section
+
+```
+project.yaml                    wave -1
+argocd.yaml                     wave 0
+cert-manager.yaml                wave 0
+local-path-provisioner-app.yaml  (unannotated -> implicit wave 0)
+cluster-issuer-app.yaml          wave 1
+root-dev.yaml                    (unannotated -> implicit wave 0)
+root-staging.yaml                (unannotated -> implicit wave 0)
+root-prod.yaml                   (unannotated -> implicit wave 0)
+```
+
+`local-path-provisioner-app.yaml` and `root-dev/staging/prod.yaml` were **all**
+implicitly wave 0 — the same wave. Same wave means no ordering guarantee: on a
+from-scratch bootstrap, nothing stopped `routa-dev` from being created (and, in turn,
+syncing Harbor, whose Helm chart requests a PVC) before the storage provisioner's
+Deployment was actually Ready. This was a real, live gap, not a theoretical one — it
+would have reproduced Section 25's exact symptom on the very rebuild this repo's
+storage fix was supposed to prevent.
+
+### 27.2 Why the fix belongs on the root apps, not on Harbor or kube-prometheus-stack
+
+Worth stating explicitly, because it's the non-obvious part: `argocd.argoproj.io/
+sync-wave` orders resources **within one Application's own sync**, not across the
+app-of-apps hierarchy. `harbor` and `kube-prometheus-stack` are synced by
+`routa-dev`'s (or `-staging`'s / `-prod`'s) own reconcile — a completely separate sync
+operation from `bootstrap`'s. A wave annotation on `harbor/application.yaml` would
+only order Harbor relative to *its own siblings* (kube-prometheus-stack, demo-app)
+within `routa-dev`'s sync; it has no relationship whatsoever to
+`local-path-provisioner-app.yaml`, which lives in a different Application's resource
+list entirely. Annotating Harbor directly would have looked like a fix and done
+nothing.
+
+The only place storage and the root apps are siblings in the *same* sync is
+`bootstrap`'s own resource list — so that's the only place a wave annotation between
+them can mean anything.
+
+### 27.3 The fix
+
+`local-path-provisioner-app.yaml`: made its wave **explicit** (`"0"`, same value as
+the previous implicit default) — consistent with this repo's standing preference for
+explicit over implicit-and-relied-upon (the `ingress-controller` pin in Section 20.2,
+the `hostname` field in Section 21, both made the same call for the same reason: a
+correct default is not the same guarantee as a value nobody can accidentally change
+out from under you).
+
+`root-dev.yaml`, `root-staging.yaml`, `root-prod.yaml`: moved to wave **`"2"`** —
+strictly after `local-path-provisioner-app.yaml` (wave 0) and, deliberately, after
+`cluster-issuer-app.yaml` (wave 1) too. Nothing in `platform/` currently needs
+`cluster-issuer` (Harbor's TLS is still disabled — Section 22.2), so waiting for it is
+more conservative than strictly required. Chose the conservative version anyway:
+"every environment's platform apps wait for all of bootstrap's day-0 infrastructure"
+is a simpler, more robust invariant to reason about and maintain than hand-tuning a
+separate wave number per actual dependency edge, and the extra wait is negligible —
+`cluster-issuer`'s own Application becomes Healthy quickly once cert-manager is up,
+since it manages only two small `ClusterIssuer` objects.
+
+`root-prod.yaml` keeps its own `syncPolicy` with no `automated` block (manual-sync
+promotion gate, Section 11) — noted explicitly in that file that the two policies
+don't conflict: the wave annotation governs when *bootstrap* creates the `routa-prod`
+Application object; the missing `automated` block governs whether *routa-prod itself*,
+once created, syncs on its own. Independent concerns, both honored.
+
+### 27.4 Verification (rendered — the actual wave numbers, not the annotations in isolation)
+
+Rendered `gitops/bootstrap` and printed every resource's resolved
+`argocd.argoproj.io/sync-wave` value, sorted:
+
+```
+wave -1  AppProject   routa-platform
+wave  0  Application  argocd
+wave  0  Application  cert-manager
+wave  0  Application  local-path-provisioner
+wave  1  Application  cluster-issuer
+wave  2  Application  routa-dev
+wave  2  Application  routa-prod
+wave  2  Application  routa-staging
+```
+
+Storage sorts strictly before every environment root, confirmed from the rendered
+output rather than from reading the annotations file-by-file and trusting they'd
+compose correctly. Re-built every kustomize root in the repo — all still exit 0
+(`gitops/bootstrap/cluster-issuer` still fails as expected, no `kustomization.yaml`
+there by design, Section 23). Confirmed `harbor/application.yaml` and
+`kube-prometheus-stack/application.yaml` remain deliberately unannotated — per 27.2,
+a wave number there would be meaningless noise, not a fix. Full `REPLACE_ME` sweep
+across `gitops/` still zero.
+
+Nothing installed, committed, or pushed.
