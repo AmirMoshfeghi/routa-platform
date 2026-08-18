@@ -76,16 +76,61 @@ overwrite dev's live state on a race (full account in `decisions.md`).
 - **Rancher on a separate node from the workload cluster**, because a cluster manager that lives inside the cluster it manages can't recover it if it goes down.
 - **DNS via sslip.io, TLS via cert-manager + Let's Encrypt**, validated on staging first and switched to production once the path was proven — avoiding sslip.io's shared rate-limit quota as a first-attempt risk.
 
-**Screenshots**:
-- `docs/screenshots/rancher-cluster-imported.png` — Rancher showing `routa-rke2` Active
-- `docs/screenshots/rancher-github-sso.png` — Rancher login via GitHub SSO
-- `docs/screenshots/argocd-app-tree.png` — the full Argo CD application tree, all Synced/Healthy
-- `docs/screenshots/argocd-github-sso.png` — Argo CD login via GitHub SSO
-- `docs/screenshots/argocd-prod-gate.png` — `routa-prod`'s manifest showing no `automated` sync policy
-- `docs/screenshots/grafana-cluster.png` — live Grafana Kubernetes cluster overview dashboard
-- `docs/screenshots/grafana-prometheus.png` — live Grafana Prometheus/monitoring-stack dashboard
-- `docs/screenshots/harbor-image.png` — the pushed image in Harbor
-- `docs/screenshots/kueue-queueing.png` — `kubectl get workloads -n kueue-demo` showing job-b `Admitted: False`, suspended behind job-a's quota
+**Screenshots**
+
+*Rancher*
+
+![Rancher cluster list — local (mgmt k3s) and routa-rke2, both Active](screenshots/rancher-clusters.png)
+
+*Rancher managing two clusters: `local` (its own host, the mgmt node's k3s) and `routa-rke2` — the separate-node architecture Section 2 describes, visible directly rather than just asserted.*
+
+![Rancher showing routa-rke2 Active](screenshots/rancher-cluster-imported.png)
+
+*`routa-rke2` detail: imported, Active, its 3 `Control Plane, Etcd` nodes.*
+
+![Rancher login via GitHub SSO](screenshots/rancher-github-sso.png)
+
+*GitHub OAuth login on Rancher (native auth provider).*
+
+*Argo CD*
+
+![Argo CD application tree, all Synced/Healthy](screenshots/argocd-app-tree.png)
+
+*Every Application's sync/health status — the full inventory, not just the bootstrap subtree.*
+
+![Argo CD app-of-apps dependency tree, rooted at bootstrap](screenshots/argocd-app-of-apps.png)
+
+*The `bootstrap` Application's own dependency tree — argocd, cert-manager, cluster-issuer, local-path-provisioner, and the three environment roots, fanning from one self-managing root.*
+
+![Argo CD login via GitHub SSO](screenshots/argocd-github-sso.png)
+
+*GitHub OAuth login on Argo CD, via Dex.*
+
+![routa-prod manifest showing no automated sync policy](screenshots/argocd-prod-gate.png)
+
+*`routa-prod`'s manifest — no `automated` block, the manual promotion gate (staging now carries the same gate — see the "Promotion" note above).*
+
+*Monitoring*
+
+![Grafana Kubernetes cluster overview dashboard](screenshots/grafana-cluster.png)
+
+*Live Grafana cluster overview dashboard.*
+
+![Grafana Prometheus dashboard](screenshots/grafana-prometheus.png)
+
+*Live Grafana Prometheus/monitoring-stack dashboard.*
+
+*Harbor*
+
+![Pushed image in Harbor](screenshots/harbor-image.png)
+
+*The pushed `demo-app` image in Harbor's public `routa` project.*
+
+*Kueue*
+
+![Kueue queueing demo — job-b waiting on quota behind job-a](screenshots/kueue-queueing.png)
+
+*`kubectl get workloads -n kueue-demo` — job-b `Admitted: False`, suspended behind job-a's quota.*
 
 ---
 

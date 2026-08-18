@@ -1,5 +1,164 @@
 # Verda Senior Platform Engineer Assignment — Day 0 Decision Log
 
+> **Reading note (added at final submission sweep, 2026-08-18):** the platform is now
+> fully built, deployed, and live — for current state see `docs/report.md` and
+> `README.md`. Sections 1–9 below are the original Day-0 planning log (2026-08-09),
+> preserved exactly as written — including its "WSL2" tooling references (the
+> environment used that one day, before consolidating to macOS, as Section 10 Step 6
+> narrates) and its `Status`/`Open items`/`Next session` tracking, all of which
+> reflects Day-0 state only and is superseded by Section 10 onward. Left unedited
+> below rather than rewritten in place, consistent with this log's own established
+> practice elsewhere (e.g. Section 4.4: "deliberately left unedited as a record of
+> what was planned before the constraint hit... amending it in place would erase the
+> more interesting fact").
+
+## Table of contents
+
+<details><summary>140 sections/subsections — click to expand</summary>
+
+- [1. Assignment analysis](#sec-1)
+  - [1.1 The brief](#sec-1-1)
+  - [1.2 Mapping the assignment to the job description](#sec-1-2)
+  - [1.3 The most important sentence in the brief](#sec-1-3)
+  - [1.4 GPU: deferred, not decided — revisit once time budget is known](#sec-1-4)
+- [2. Target architecture (planned, not yet built)](#sec-2)
+  - [2.1 Rationale per component](#sec-2-1)
+- [3. Steps completed today, in order, with reasoning](#sec-3)
+  - [Step 1 — Analysed assignment and job ad; mapped rubric](#sec-3-1)
+  - [Step 2 — Drafted deadline extension request](#sec-3-2)
+  - [Step 3 — Resolved a misreading: signup does not start a timed session](#sec-3-3)
+  - [Step 4 — Account, project, and credential setup](#sec-3-4)
+  - [Step 5 — Corrected credential storage](#sec-3-5)
+  - [Step 6 — Established the working environment: macOS with WSL2 as an earlier step](#sec-3-6)
+- [4. Discovery results — region, sizing and cost model (locked)](#sec-4)
+  - [4.1 Regional capacity varies — FIN-03 is the only viable region](#sec-4-1)
+  - [4.2 Instance pricing (CPU)](#sec-4-2)
+  - [4.3 Storage is billed independently — and it is not a rounding error](#sec-4-3)
+  - [4.4 Locked configuration](#sec-4-4)
+  - [4.5 Shutdown policy](#sec-4-5)
+  - [4.6 Spot pricing — considered and rejected](#sec-4-6)
+- [5. Documentation consulted](#sec-5)
+  - [5.1 Key facts extracted](#sec-5-1)
+- [6. AI-assisted engineering angle](#sec-6)
+- [7. Open items](#sec-7)
+  - [7.1 Open question — project scoping for API credentials](#sec-7-1)
+- [8. Next session — first actions](#sec-8)
+- [9. Standing constraints](#sec-9)
+- [10. Repository scaffolded (2026-08-17)](#sec-10)
+- [11. Topology change: RKE2 control plane goes from 1 server + 2 agents to a 3-server HA quorum (2026-08-17)](#sec-11)
+- [12. API endpoint, TLS SANs, and a latent `group_vars` bug (2026-08-17)](#sec-12)
+  - [12.1 The reported issue, corrected](#sec-12-1)
+  - [12.2 API endpoint decision (and what is deliberately deferred)](#sec-12-2)
+  - [12.3 The bug found while verifying: `group_vars/` was never being loaded](#sec-12-3)
+- [13. CPU image identifier resolved (2026-08-17)](#sec-13)
+- [14. Capacity constraint hit mid-apply: worker type falls back to CPU.16V.64G (2026-08-17)](#sec-14)
+- [15. SSH identity: Verda's minimal image seeds root, not `ubuntu` — and the root→admin handover (2026-08-17)](#sec-15)
+- [16. Firewall port set: Cilium/RKE2 ports resolved, and split public vs node-to-node (2026-08-17)](#sec-16)
+  - [16.1 The defects](#sec-16-1)
+  - [16.2 Port set, with provenance](#sec-16-2)
+  - [16.3 Public vs node-to-node — the substantive design change](#sec-16-3)
+  - [16.4 One addition beyond the reported defects](#sec-16-4)
+  - [16.5 Verification](#sec-16-5)
+- [17. Rancher Manager on routa-mgmt: the chart's `kubeVersion` cap drives every other version (2026-08-17)](#sec-17)
+  - [17.1 The constraint that decided it](#sec-17-1)
+  - [17.2 k3s pinned to 1.35, not 1.36 — the non-obvious call](#sec-17-2)
+  - [17.3 Ingress: ingress-nginx is retired, so Traefik](#sec-17-3)
+  - [17.4 cert-manager — and ignoring Rancher's own docs on it](#sec-17-4)
+  - [17.5 Let's Encrypt over sslip.io is a known trap](#sec-17-5)
+  - [17.6 Structure: Ansible, not gitops/](#sec-17-6)
+  - [17.7 Verification so far (rule 4 — render, don't syntax-check)](#sec-17-7)
+  - [17.8 Deferred, deliberately](#sec-17-8)
+- [18. Rancher TLS: the production cert flip that silently didn't happen (2026-08-17)](#sec-18)
+- [19. RKE2 cluster import: `agentTLSMode: strict` vs a public Let's Encrypt cert (2026-08-17)](#sec-19)
+- [20. Argo CD: self-managing bootstrap plan (2026-08-17)](#sec-20)
+  - [20.1 Versions pinned](#sec-20-1)
+  - [20.2 RKE2 already has an ingress controller — and it is Traefik](#sec-20-2)
+  - [20.3 The structural call: singletons go in `bootstrap/`, not `platform/`](#sec-20-3)
+  - [20.4 Self-management: `ServerSideApply=true` is mandatory](#sec-20-4)
+  - [20.5 Bootstrap sequence](#sec-20-5)
+  - [20.6 UI exposure, consistent with Rancher](#sec-20-6)
+  - [20.7 Blocking: the repo has no Git remote](#sec-20-7)
+  - [20.8 Deferred](#sec-20-8)
+- [21. Argo CD bootstrap manifests written (2026-08-17)](#sec-21)
+  - [21.1 Files](#sec-21-1)
+  - [21.2 The bug the plan didn't catch: `bootstrap` referencing its own not-yet-created project](#sec-21-2)
+  - [21.3 Sync-wave sequencing, and why it's needed at all](#sec-21-3)
+  - [21.4 Two things reused from earlier incidents rather than re-derived](#sec-21-4)
+  - [21.5 Scope held, gaps flagged rather than silently closed](#sec-21-5)
+  - [21.6 Verification (rule 4 — rendered, not eyeballed)](#sec-21-6)
+- [22. Placeholders resolved: repo is push-ready (2026-08-17)](#sec-22)
+  - [22.1 What was filled in](#sec-22-1)
+  - [22.2 One instruction that didn't cleanly apply: Harbor's `externalURL`](#sec-22-2)
+  - [22.3 TODO before this is production: `project.yaml` sourceRepos is still `"*"`](#sec-22-3)
+  - [22.4 Verification (rule 4 — rendered, all four affected roots, not just one)](#sec-22-4)
+- [23. Bootstrap sync failure: ClusterIssuer bundled in the same Application as cert-manager (2026-08-17)](#sec-23)
+  - [23.1 Why sync-waves didn't save this, and why that's not a sync-wave bug](#sec-23-1)
+  - [23.2 The fix: a separate Application, not a suppressed check](#sec-23-2)
+  - [23.3 `SkipDryRunOnMissingResource=true` — required, and why it's safe to leave on](#sec-23-3)
+  - [23.4 Verification (rendered, both the split-out piece and everything around it)](#sec-23-4)
+- [24. kube-prometheus-stack hit the same CRD-size failure as cert-manager (2026-08-17)](#sec-24)
+- [25. Root cause found: RKE2 never bundled a default StorageClass — this was never disabled (2026-08-17)](#sec-25)
+  - [25.1 What was actually checked, and what it shows](#sec-25-1)
+  - [25.2 The fix — and why "enable it via RKE2 config" was never actually an option](#sec-25-2)
+  - [25.3 Vendoring discipline: patch what's addressable, edit what isn't, and say which is which](#sec-25-3)
+  - [25.4 Verification (rendered, every level: the sub-kustomization, the wrapping app, and every root)](#sec-25-4)
+  - [25.5 Flagged, not decided: Prometheus on `emptyDir`](#sec-25-5)
+- [26. Storage fix, split by risk: Argo for the live cluster, documentation for Ansible (2026-08-17)](#sec-26)
+  - [26.1 Re-stated plainly: there is nothing to update in RKE2's `disable` list](#sec-26-1)
+  - [26.2 A real mechanism exists — checked, and deliberately not used](#sec-26-2)
+  - [26.3 What was actually done in Ansible](#sec-26-3)
+  - [26.4 The live cluster — unchanged from Section 25, re-verified](#sec-26-4)
+  - [26.5 Verification](#sec-26-5)
+- [27. The storage fix wasn't actually ordered relative to its consumers (2026-08-17)](#sec-27)
+  - [27.1 What was actually true before this section](#sec-27-1)
+  - [27.2 Why the fix belongs on the root apps, not on Harbor or kube-prometheus-stack](#sec-27-2)
+  - [27.3 The fix](#sec-27-3)
+  - [27.4 Verification (rendered — the actual wave numbers, not the annotations in isolation)](#sec-27-4)
+- [28. Persistent storage for Prometheus and Alertmanager (2026-08-17)](#sec-28)
+  - [28.1 The asymmetry the request warned about — confirmed real](#sec-28-1)
+  - [28.2 A second layer of the same asymmetry, found only by rendering — not a problem, but worth recording](#sec-28-2)
+  - [28.3 Design choices in the values](#sec-28-3)
+  - [28.4 WaitForFirstConsumer — naming why a `Pending` PVC here is not Section 25 again](#sec-28-4)
+  - [28.5 Verification](#sec-28-5)
+- [29. Prometheus Operator running but not reconciling — stale webhook certs (2026-08-18)](#sec-29)
+- [30. TLS enabled on Harbor (2026-08-18)](#sec-30)
+  - [30.1 Traced the actual chart templates, not just the values.yaml comments](#sec-30-1)
+  - [30.2 The values](#sec-30-2)
+  - [30.3 `letsencrypt-production` used directly — a deliberate exception to staging-first, stated plainly](#sec-30-3)
+  - [30.4 Section 18 lesson — checked, confirmed not applicable, said so anyway](#sec-30-4)
+  - [30.5 Verification — rendered against the real pinned chart, not just parsed](#sec-30-5)
+- [31. demo-app image: arm64 build, amd64 nodes (2026-08-18)](#sec-31)
+- [32. Argo CD SSO via Dex + GitHub OAuth (2026-08-18)](#sec-32)
+  - [32.1 Callback path — verified against current docs, matches what's already registered](#sec-32-1)
+  - [32.2 Config location — traced in the pinned chart, not assumed](#sec-32-2)
+  - [32.3 `useLoginAsID` — the non-obvious flag that makes username-based RBAC possible at all](#sec-32-3)
+  - [32.4 No `orgs:` — a real access consequence, not a missing detail](#sec-32-4)
+  - [32.5 The RBAC mapping — proposed, not yet confirmed](#sec-32-5)
+  - [32.6 The Secret — imperative, never through Git](#sec-32-6)
+  - [32.7 Verification](#sec-32-7)
+- [33. SSO implemented on Rancher and Argo CD (2026-08-18)](#sec-33)
+  - [33.1 Argo CD — GitHub OAuth via Dex](#sec-33-1)
+  - [33.2 Rancher — native GitHub auth provider](#sec-33-2)
+- [34. Argo CD flipped to Let's Encrypt production (2026-08-18)](#sec-34)
+- [35. `project.yaml` sourceRepos tightened from `"*"` (2026-08-18)](#sec-35)
+- [36. Kueue (bonus task) added (2026-08-18)](#sec-36)
+  - [36.1 Version, verified two ways — and a real doc-vs-tag mismatch caught by that](#sec-36-1)
+  - [36.2 Architecture: cluster singleton, same shape as cert-manager/ClusterIssuer](#sec-36-2)
+  - [36.3 The demo: sized to actually prove queueing, not just installation](#sec-36-3)
+  - [36.4 A pre-existing condition this inherits, not one it creates](#sec-36-4)
+  - [36.4b Demo runtime bumped 60s → 180s — the quota was never wrong, the window was too short (2026-08-18)](#sec-36-4b)
+  - [36.5 Verification](#sec-36-5)
+- [37. Environment Application-name collision: root cause confirmed, orphaned resources cleaned up, root cause NOT fixed (2026-08-18)](#sec-37)
+  - [37.1 Root cause, confirmed directly against the live cluster](#sec-37-1)
+  - [37.2 Correction: this is what was actually behind `kube-prometheus-stack`'s bad health](#sec-37-2)
+  - [37.3 A live, cluster-wide side effect checked *before* anything was deleted](#sec-37-3)
+  - [37.4 What actually got cleaned up — and by whom](#sec-37-4)
+  - [37.5 What's still actually broken — cleanup is not a fix](#sec-37-5)
+  - [37.6 Verification](#sec-37-6)
+  - [37.7 `routa-staging`'s auto-sync removed — closes the recurrence risk 37.5 flagged, not the root cause](#sec-37-7)
+
+</details>
+
 **Date:** 2026-08-09
 **Status:** Account, tooling and WSL2 environment complete. Sizing and region locked from
 live discovery data. No infrastructure provisioned. No credits consumed.
@@ -14,8 +173,10 @@ live discovery data. No infrastructure provisioned. No credits consumed.
 
 ---
 
+<a id="sec-1"></a>
 ## 1. Assignment analysis
 
+<a id="sec-1-1"></a>
 ### 1.1 The brief
 
 Provision infrastructure on Verda Cloud (CPU VMs with public IPs) and build a small
@@ -30,6 +191,7 @@ alternative), and monitoring — each with SSO "if possible".
 Optional advanced tasks: Cilium, KWOK (simulate ~100 nodes), Kueue (priority queues),
 GPU tasks if GPU nodes are available, backup strategy, security hardening.
 
+<a id="sec-1-2"></a>
 ### 1.2 Mapping the assignment to the job description
 
 Every task maps to a stated requirement. This is not a generic DevOps exercise; it is
@@ -50,6 +212,7 @@ a targeted probe of the role's competencies.
 **Conclusion:** the bonus list is not a grab-bag. Every item is something Verda
 operates in production. Bonus tasks are therefore high-signal, not optional filler.
 
+<a id="sec-1-3"></a>
 ### 1.3 The most important sentence in the brief
 
 > "We care more about your reasoning, tradeoffs, debugging approach, and final summary
@@ -62,6 +225,7 @@ Repeated in the covering email. Two consequences that shape the whole approach:
    failure and the debugging path to resolution is the strongest available signal of
    seniority. Do not hide failures; instrument them.
 
+<a id="sec-1-4"></a>
 ### 1.4 GPU: deferred, not decided — revisit once time budget is known
 
 Initial framing was to skip GPU outright, on the reasoning that credits should be
@@ -97,6 +261,7 @@ or credits.
 
 ---
 
+<a id="sec-2"></a>
 ## 2. Target architecture (planned, not yet built)
 
 ```
@@ -110,6 +275,7 @@ VM-1,2,3:      RKE2 cluster → imported into Rancher
 Argo CD (app-of-apps) → Harbor, kube-prometheus-stack, demo app
 ```
 
+<a id="sec-2-1"></a>
 ### 2.1 Rationale per component
 
 **Terraform + Ansible rather than manual provisioning.**
@@ -151,13 +317,16 @@ worth more than the implementation effort costs.
 
 ---
 
+<a id="sec-3"></a>
 ## 3. Steps completed today, in order, with reasoning
 
+<a id="sec-3-1"></a>
 ### Step 1 — Analysed assignment and job ad; mapped rubric
 **Why first:** understanding what is being tested determines where effort goes.
 Building before understanding the rubric risks a technically fine cluster that misses
 the point.
 
+<a id="sec-3-2"></a>
 ### Step 2 — Drafted deadline extension request
 **Why:** travel this week compresses available time, and the bonus tasks are
 high-signal. Two extra days cost the employer nothing. Asked early, before being deep
@@ -167,6 +336,7 @@ planning.
 The email also asks whether **compute credits expire a fixed period after redemption**
 — the one genuine unknown that affects sequencing.
 
+<a id="sec-3-3"></a>
 ### Step 3 — Resolved a misreading: signup does not start a timed session
 **Concern raised:** would logging in start the assignment clock?
 
@@ -179,6 +349,7 @@ side.
 **Why this mattered:** the misreading was costing a day of preparation time for no
 reason.
 
+<a id="sec-3-4"></a>
 ### Step 4 — Account, project, and credential setup
 
 Created the Verda account at [console.verda.com](https://console.verda.com) using the
@@ -201,6 +372,7 @@ Enabled account 2FA as baseline hygiene.
 non-expiring) — the assignment has a known end date, so a permanent credential is an
 unnecessary liability. Worth a line in the security section of the report.
 
+<a id="sec-3-5"></a>
 ### Step 5 — Corrected credential storage
 **Problem:** credentials had been temporarily copied into Google Drive.
 
@@ -237,6 +409,7 @@ provider "verda" {}
 Result: **zero credential material anywhere in the repository**, visible at a glance
 to a reviewer.
 
+<a id="sec-3-6"></a>
 ### Step 6 — Established the working environment: macOS with WSL2 as an earlier step
 
 Initial CLI setup and account verification were done via WSL2 on Windows (Ansible has
@@ -311,12 +484,14 @@ availability re-confirmed immediately before starting the build (see 4.1).
 
 ---
 
+<a id="sec-4"></a>
 ## 4. Discovery results — region, sizing and cost model (locked)
 
 Discovery was run *before* any design was committed. This was the correct order: it
 surfaced a regional capacity constraint that would have invalidated the plan if
 discovered mid-build.
 
+<a id="sec-4-1"></a>
 ### 4.1 Regional capacity varies — FIN-03 is the only viable region
 
 `verda availability` across all three Finnish regions:
@@ -344,6 +519,7 @@ and confirms live inventory really does move. Both required CPU types,
 immediately before `terraform apply` is now standard practice for this build, not a
 one-off.
 
+<a id="sec-4-2"></a>
 ### 4.2 Instance pricing (CPU)
 
 | Type | vCPU | RAM | $/hr |
@@ -353,6 +529,7 @@ one-off.
 | CPU.16V.64G | 16 | 64 GB | $0.1116 |
 | CPU.32V.128G | 32 | 128 GB | $0.2232 |
 
+<a id="sec-4-3"></a>
 ### 4.3 Storage is billed independently — and it is not a rounding error
 
 `verda cost estimate` breaks compute and OS volume into separate line items.
@@ -369,6 +546,7 @@ nodes. Verified estimates:
 | CPU.8V.32G + 100 GiB | $1.34 | $0.66 | **$2.00** |
 | CPU.16V.64G + 100 GiB | $2.68 | $0.66 | **$3.34** |
 
+<a id="sec-4-4"></a>
 ### 4.4 Locked configuration
 
 | Role | Type | OS volume | $/day |
@@ -391,6 +569,7 @@ shutdown discipline. Budget is settled and is not the binding constraint — tim
   protect scarce time**. An evening lost to diagnosing OOMKills costs more than the
   entire compute bill.
 
+<a id="sec-4-5"></a>
 ### 4.5 Shutdown policy
 
 Because storage bills independently of compute, and the pricing model separates the
@@ -409,6 +588,7 @@ refunded, so there is no penalty for stopping mid-hour.
 **At final teardown: purge the volume trash.** Deleted volumes go to a per-account
 trash bin and continue to count toward storage quota until permanently purged.
 
+<a id="sec-4-6"></a>
 ### 4.6 Spot pricing — considered and rejected
 
 Spot pricing is available (`--spot`) and cheaper. Rejected for this build: spot
@@ -421,6 +601,7 @@ relevant to the role.
 
 ---
 
+<a id="sec-5"></a>
 ## 5. Documentation consulted
 
 | Topic | URL |
@@ -446,7 +627,8 @@ relevant to the role.
 | Container registry | https://docs.verda.com/storage/container-registry/ |
 | CLI releases | https://github.com/verda-cloud/verda-cli/releases |
 
-### Key facts extracted
+<a id="sec-5-1"></a>
+### 5.1 Key facts extracted
 
 - Billing is **prepaid, in 10-minute increments**, with the unused portion refunded if
   a resource is terminated early → shutting down between sessions genuinely saves
@@ -465,6 +647,7 @@ relevant to the role.
 
 ---
 
+<a id="sec-6"></a>
 ## 6. AI-assisted engineering angle
 
 The JD states this twice: "Leverage AI-assisted engineering tools to improve
@@ -490,6 +673,7 @@ Planned:
 
 ---
 
+<a id="sec-7"></a>
 ## 7. Open items
 
 | Item | Status |
@@ -503,6 +687,7 @@ Planned:
 | Billing notification thresholds adjusted (72h / 1 day) | Optional; confirm and save |
 | Codename for cluster/hostnames/DNS | Deferred until provisioning |
 
+<a id="sec-7-1"></a>
 ### 7.1 Open question — project scoping for API credentials
 
 **The question:** the dedicated project was created through the console UI. Cloud API
@@ -538,6 +723,7 @@ by a one-cent controlled experiment is a better story than a smooth path.
 
 ---
 
+<a id="sec-8"></a>
 ## 8. Next session — first actions
 
 1. **Send the extension email.** Blocking nothing technically, but the answer is more
@@ -609,6 +795,7 @@ by a one-cent controlled experiment is a better story than a smooth path.
 
 ---
 
+<a id="sec-9"></a>
 ## 9. Standing constraints
 
 - **Nothing is provisioned until there is stable internet.** VMs bill hourly whether or
@@ -624,6 +811,7 @@ by a one-cent controlled experiment is a better story than a smooth path.
 
 ---
 
+<a id="sec-10"></a>
 ## 10. Repository scaffolded (2026-08-17)
 
 Created the directory structure and starter files for `terraform/`, `ansible/`,
@@ -692,6 +880,7 @@ block scaffolding further; they block `terraform apply`.
 
 ---
 
+<a id="sec-11"></a>
 ## 11. Topology change: RKE2 control plane goes from 1 server + 2 agents to a 3-server HA quorum (2026-08-17)
 
 **Reversed the topology decision from Section 10.** `routa-cp-1/2/3` are now three
@@ -767,12 +956,14 @@ because the whole cluster is 3 nodes.
 
 ---
 
+<a id="sec-12"></a>
 ## 12. API endpoint, TLS SANs, and a latent `group_vars` bug (2026-08-17)
 
 Two findings from reviewing the `rke2-server` role. The first was raised as "`rke2_tls_san`
 is undefined and will hard-fail the template task"; the second was found while
 verifying the fix and is the more serious of the two.
 
+<a id="sec-12-1"></a>
 ### 12.1 The reported issue, corrected
 
 `rke2_tls_san` **was** defined — in `ansible/roles/rke2-server/defaults/main.yml`, as
@@ -787,6 +978,7 @@ concern was right, and it is the same problem as 12.2 below — worth recording 
 "the stated diagnosis was wrong, the instinct was correct" is exactly the kind of
 thing the brief's debugging-approach criterion is asking about.
 
+<a id="sec-12-2"></a>
 ### 12.2 API endpoint decision (and what is deliberately deferred)
 
 **Decision: clients point at `routa-cp-1`'s public IP as the Kubernetes API
@@ -833,6 +1025,7 @@ moving it. Since the SAN list already covers all three servers, adding a real en
 later is a config change, not a rebuild. Called out explicitly in the report's
 "what I would improve with more time" section rather than left for a reviewer to spot.
 
+<a id="sec-12-3"></a>
 ### 12.3 The bug found while verifying: `group_vars/` was never being loaded
 
 Verifying the SAN fix meant actually rendering the template, which failed with
@@ -880,6 +1073,7 @@ three-element list, identical across all three servers; the bootstrap node emits
 
 ---
 
+<a id="sec-13"></a>
 ## 13. CPU image identifier resolved (2026-08-17)
 
 The `image` variable flagged as unresolved since Section 8 (step 6) and reiterated
@@ -959,6 +1153,7 @@ or `apply` run, nothing committed.
 
 ---
 
+<a id="sec-14"></a>
 ## 14. Capacity constraint hit mid-apply: worker type falls back to CPU.16V.64G (2026-08-17)
 
 **What happened:** `terraform apply` failed partway through with a 503 "No capacity
@@ -1034,6 +1229,7 @@ to be reviewed by hand first.
 
 ---
 
+<a id="sec-15"></a>
 ## 15. SSH identity: Verda's minimal image seeds root, not `ubuntu` — and the root→admin handover (2026-08-17)
 
 **Finding.** Verda's minimal `ubuntu-24.04` image (the one resolved in Section 13)
@@ -1128,6 +1324,7 @@ report rather than left implicit.
 
 ---
 
+<a id="sec-16"></a>
 ## 16. Firewall port set: Cilium/RKE2 ports resolved, and split public vs node-to-node (2026-08-17)
 
 Three defects in the hardening role's firewall, found in review before the playbook
@@ -1135,6 +1332,7 @@ ever ran. All three would have surfaced as "the cluster is up but pods on differ
 nodes can't talk to each other" — the worst class of bug to debug from inside a
 half-working cluster.
 
+<a id="sec-16-1"></a>
 ### 16.1 The defects
 
 1. **`hardening_cilium_tcp_ports` / `hardening_cilium_udp_ports` were empty**, left as
@@ -1149,6 +1347,7 @@ half-working cluster.
    "rke2_server only". The comments described the intended design; the code opened
    etcd on the mgmt node too.
 
+<a id="sec-16-2"></a>
 ### 16.2 Port set, with provenance
 
 Verified 2026-08-17 against both authorities, which agree:
@@ -1188,6 +1387,7 @@ Calico BGP `179` (wrong CNI), NodePort `30000-32767` (services go through ingres
 An unexplained absence is indistinguishable from an oversight; each of these is now
 a decision.
 
+<a id="sec-16-3"></a>
 ### 16.3 Public vs node-to-node — the substantive design change
 
 The list is now split by **exposure**, not by component:
@@ -1219,6 +1419,7 @@ all three cluster nodes are servers, so RKE2's "server nodes" and "all RKE2 node
 source columns collapse to the same peer set; noted in the defaults so a future
 split into dedicated workers does not silently inherit the wrong scope.
 
+<a id="sec-16-4"></a>
 ### 16.4 One addition beyond the reported defects
 
 **80/443 were added**, which the review did not ask for. Not speculative: the
@@ -1229,6 +1430,7 @@ unreachable, and the failure would look like an ingress or DNS problem rather th
 firewall one. Flagged explicitly rather than slipped in — if ingress ends up confined
 to a single node, `hardening_ingress_tcp_ports` should be emptied on the others.
 
+<a id="sec-16-5"></a>
 ### 16.5 Verification
 
 Rendered rather than run, per the Section 12.3 lesson. Confirmed by evaluating the
@@ -1251,12 +1453,14 @@ real variables against the example inventory (`-c local`, no host contact):
 
 ---
 
+<a id="sec-17"></a>
 ## 17. Rancher Manager on routa-mgmt: the chart's `kubeVersion` cap drives every other version (2026-08-17)
 
 Scaffolded k3s + cert-manager + Rancher for the management node. Nothing run against
 the node yet — this section records the version decisions and why, per CLAUDE.md
 rule 1 (docs before syntax) and rule 2 (pin everything, with provenance).
 
+<a id="sec-17-1"></a>
 ### 17.1 The constraint that decided it
 
 The Rancher Helm chart carries a hard `kubeVersion` cap, and it differs by channel.
@@ -1281,6 +1485,7 @@ returns HTTP 404. Choosing it over stable-channel 2.14.3 is a real risk, taken
 knowingly because the alternative is rebuilding the RKE2 cluster on 1.35.x. The
 fallback is preserved deliberately — see 17.2.
 
+<a id="sec-17-2"></a>
 ### 17.2 k3s pinned to 1.35, not 1.36 — the non-obvious call
 
 The obvious move is to match the RKE2 cluster at 1.36.3 for symmetry. Rejected.
@@ -1296,6 +1501,7 @@ without rebuilding the node. Zero cost, real hedge — which is exactly what the
 risk needs. It also sidesteps the Traefik chart v40.x breaking change noted in the
 `v1.36.3+k3s1` release notes.
 
+<a id="sec-17-3"></a>
 ### 17.3 Ingress: ingress-nginx is retired, so Traefik
 
 The first plan pinned ingress-nginx. That was wrong and was corrected before any code
@@ -1322,6 +1528,7 @@ the Traefik Service an external address for the HTTP-01 challenge.
 is unaffected by the retirement. It is also not a drop-in replacement, and was not
 treated as one.)*
 
+<a id="sec-17-4"></a>
 ### 17.4 cert-manager — and ignoring Rancher's own docs on it
 
 Pinned `v1.21.1`. cert-manager 1.21 supports Kubernetes 1.33 → 1.36
@@ -1343,6 +1550,7 @@ Helm CLI pinned at `v3.21.4` (newest v3, 2026-08-14). The releases page now warn
 migrating chart tooling to a new major version *while* standing up Rancher would
 confuse two independent failure modes. Logged as future work.
 
+<a id="sec-17-5"></a>
 ### 17.5 Let's Encrypt over sslip.io is a known trap
 
 `ingress.tls.source=letsEncrypt` with hostname `rancher.95.133.252.175.sslip.io`.
@@ -1361,6 +1569,7 @@ production is rate-limited, the fallback is `ingress.tls.source=rancher` (self-s
 via cert-manager), which needs no external CA. The cert-status task reports rather
 than asserts, precisely so a rate-limit does not fail an otherwise-correct run.
 
+<a id="sec-17-6"></a>
 ### 17.6 Structure: Ansible, not gitops/
 
 `ansible/roles/k3s-server`, `ansible/roles/rancher`, `playbooks/mgmt-rancher.yml`
@@ -1377,6 +1586,7 @@ Credentials stay out of the repo (CLAUDE.md): `bootstrapPassword` is read from
 touching the cluster, rather than letting Rancher generate a random password nobody
 recorded. The Helm task is `no_log: true`.
 
+<a id="sec-17-7"></a>
 ### 17.7 Verification so far (rule 4 — render, don't syntax-check)
 
 `--syntax-check` passes, but per Section 12 that proves nothing about variables. Vars
@@ -1398,6 +1608,7 @@ The credential gate was tested in both directions: env unset → length 0 (asser
 fails), env set → length 16 (assert passes). A gate that has only ever been observed
 passing is not a verified gate.
 
+<a id="sec-17-8"></a>
 ### 17.8 Deferred, deliberately
 
 Cluster import and SSO are **not** part of this step, by instruction — Rancher itself
@@ -1413,6 +1624,7 @@ guessed.
 
 ---
 
+<a id="sec-18"></a>
 ## 18. Rancher TLS: the production cert flip that silently didn't happen (2026-08-17)
 
 Rancher came up as planned. Getting a *browser-trusted* cert onto it took one
@@ -1462,6 +1674,7 @@ than being told not to.
 
 ---
 
+<a id="sec-19"></a>
 ## 19. RKE2 cluster import: `agentTLSMode: strict` vs a public Let's Encrypt cert (2026-08-17)
 
 First import attempt of the RKE2 cluster into Rancher failed. `cattle-cluster-agent`
@@ -1533,11 +1746,13 @@ reproduces the fix instead of regressing to `strict`.
 
 ---
 
+<a id="sec-20"></a>
 ## 20. Argo CD: self-managing bootstrap plan (2026-08-17)
 
 Plan only — nothing installed. Records pinned versions, the bootstrap sequence, how it
 wires into the existing `gitops/` scaffold, and the two things still blocking.
 
+<a id="sec-20-1"></a>
 ### 20.1 Versions pinned
 
 | Component | Pin | Source, verified 2026-08-17 |
@@ -1555,6 +1770,7 @@ reference is confirmed still current rather than left to rot. Note the chart is
 *community maintained* per Argo CD's own install docs — worth knowing, since it means
 chart version and app version move on separate cadences.
 
+<a id="sec-20-2"></a>
 ### 20.2 RKE2 already has an ingress controller — and it is Traefik
 
 This was the open question in the task ("flag whether RKE2 needs an ingress controller
@@ -1601,6 +1817,7 @@ Two follow-ups, neither blocking:
 `cert-manager` namespace, no CRDs). It is required for a real certificate on the Argo CD
 hostname, so it has to be part of this work.
 
+<a id="sec-20-3"></a>
 ### 20.3 The structural call: singletons go in `bootstrap/`, not `platform/`
 
 The existing scaffold has `platform/` as a base that all three of
@@ -1626,6 +1843,7 @@ Applications will contend over one set of CRDs. The usual fix is to install the 
 once as a singleton and set `crds.enabled=false` in the per-environment releases. Worth
 a separate pass.
 
+<a id="sec-20-4"></a>
 ### 20.4 Self-management: `ServerSideApply=true` is mandatory
 
 Argo CD documents self-management — *"Argo CD is able to manage itself since all
@@ -1646,6 +1864,7 @@ required; the initial Helm install is reproducible from the same values file, so
 re-bootstrapping is always possible; and `prune` stays **off** for the self-managing
 app until a first sync shows a clean diff. Every other app keeps prune on.
 
+<a id="sec-20-5"></a>
 ### 20.5 Bootstrap sequence
 
 Four layers, one imperative seed:
@@ -1667,6 +1886,7 @@ running, and cert-manager arrives via step 3. So the Argo CD `Certificate` will 
 pending for the first couple of minutes and then resolve on its own. Per the Section 18
 lesson, that is a transient to wait out, not a failure to react to.
 
+<a id="sec-20-6"></a>
 ### 20.6 UI exposure, consistent with Rancher
 
 Hostname `argocd.95.133.252.180.sslip.io` (routa-cp-1, the same node as
@@ -1695,6 +1915,7 @@ of *access* while etcd stays genuinely HA — the same deliberate limitation rec
 the API endpoint in Section 12, with the same answer (an LB or round-robin DNS) deferred
 for the same reason.
 
+<a id="sec-20-7"></a>
 ### 20.7 Blocking: the repo has no Git remote
 
 `git remote -v` is empty. Argo CD pulls manifests from Git, so it cannot function until
@@ -1717,6 +1938,7 @@ namespace, which is new credential-handling surface). Not guessed — the choice
 what gets built. `AppProject.spec.sourceRepos` should be tightened from `"*"` to the
 real URL at the same time.
 
+<a id="sec-20-8"></a>
 ### 20.8 Deferred
 
 SSO stays out of scope until Argo CD is up and self-managing, by instruction. Noted for
@@ -1724,6 +1946,7 @@ then: SSO depends on `global.domain` being correct, which 20.6 sets.
 
 ---
 
+<a id="sec-21"></a>
 ## 21. Argo CD bootstrap manifests written (2026-08-17)
 
 Section 20 was a plan. This is the write-up of turning it into files — what changed
@@ -1731,6 +1954,7 @@ from the plan while writing it, and how it was verified. Nothing installed, noth
 pushed, nothing committed; the repo has no Git remote configured in this environment
 (operator will create and push it separately).
 
+<a id="sec-21-1"></a>
 ### 21.1 Files
 
 ```
@@ -1746,6 +1970,7 @@ gitops/bootstrap/kustomization.yaml     (modified) wires the above into the exis
 `argocd.95.133.252.180.sslip.io` (routa-cp-1, matching `rke2_api_endpoint_host`). Both
 supplied by the operator this session, not guessed.
 
+<a id="sec-21-2"></a>
 ### 21.2 The bug the plan didn't catch: `bootstrap` referencing its own not-yet-created project
 
 Every child Application in this repo uses `project: routa-platform`. Section 20's plan
@@ -1763,6 +1988,7 @@ the `default` project, which is created automatically" —
 argo-cd.readthedocs.io/en/stable/user-guide/projects/, verified 2026-08-17). Every
 other Application in the repo stays on `routa-platform`.
 
+<a id="sec-21-3"></a>
 ### 21.3 Sync-wave sequencing, and why it's needed at all
 
 `cluster-issuer.yaml` defines two `ClusterIssuer` objects, cluster-scoped like
@@ -1785,6 +2011,7 @@ does, and that resolves asynchronously once cert-manager exists — the same
 transient-not-failure pattern as Section 18 (Rancher's cert sat pending for a couple of
 minutes after chart install; expected, not a fault to chase).
 
+<a id="sec-21-4"></a>
 ### 21.4 Two things reused from earlier incidents rather than re-derived
 
 **Both ClusterIssuers, always present, never edited in place.** Traces directly to
@@ -1804,6 +2031,7 @@ Flagged and fixed while writing the manifest, the same posture as the `agentTLSM
 prediction in Section 19: reasoned out from known failure modes before touching the
 cluster, not discovered by watching something crash-loop.
 
+<a id="sec-21-5"></a>
 ### 21.5 Scope held, gaps flagged rather than silently closed
 
 Only the five files above were written, matching what was asked. Left deliberately
@@ -1823,6 +2051,7 @@ untouched, and worth listing so nothing is mistaken for finished:
 - `cluster-issuer.yaml`'s `email` field is `REPLACE_ME_LETSENCRYPT_EMAIL` in both
   issuers — never supplied this session, not guessed.
 
+<a id="sec-21-6"></a>
 ### 21.6 Verification (rule 4 — rendered, not eyeballed)
 
 `kubectl kustomize gitops/bootstrap` builds clean (exit 0) and produces exactly the 9
@@ -1855,11 +2084,13 @@ then re-verified by grep.
 
 ---
 
+<a id="sec-22"></a>
 ## 22. Placeholders resolved: repo is push-ready (2026-08-17)
 
 Filled in every remaining input the plan (Section 20) and the write-up (Section 21)
 were blocked on. Still nothing installed, nothing committed, nothing pushed.
 
+<a id="sec-22-1"></a>
 ### 22.1 What was filled in
 
 - **6 `repoURL: REPLACE_ME` occurrences** → `https://github.com/AmirMoshfeghi/routa-platform`,
@@ -1874,6 +2105,7 @@ were blocked on. Still nothing installed, nothing committed, nothing pushed.
   about no longer applies — a stale TODO left in place next to a resolved value reads
   as evidence nobody checked the fill-in actually happened.
 
+<a id="sec-22-2"></a>
 ### 22.2 One instruction that didn't cleanly apply: Harbor's `externalURL`
 
 The count "7 `REPLACE_ME` occurrences" carried over from Section 21's write-up
@@ -1890,6 +2122,7 @@ one. So the accurate count for this step was 6 repo-URL fills, not 7; the 7th
 (`externalURL`) stays open and is called out explicitly rather than folded into "zero
 `REPLACE_ME` left."
 
+<a id="sec-22-3"></a>
 ### 22.3 TODO before this is production: `project.yaml` sourceRepos is still `"*"`
 
 Per instruction, left as-is this step — tightening needs the full, correct list of
@@ -1908,6 +2141,7 @@ gate what can be deployed into this cluster defeats the point of having a projec
 all; it was a reasonable placeholder for a scaffold with no confirmed source list, not
 a reasonable steady state.
 
+<a id="sec-22-4"></a>
 ### 22.4 Verification (rule 4 — rendered, all four affected roots, not just one)
 
 `grep`-equivalent scan of every file under `gitops/` for `REPLACE_ME`: one hit,
@@ -1943,6 +2177,7 @@ repoURL: https://github.com/AmirMoshfeghi/routa-platform   (kube-prometheus-stac
 
 ---
 
+<a id="sec-23"></a>
 ## 23. Bootstrap sync failure: ClusterIssuer bundled in the same Application as cert-manager (2026-08-17)
 
 Reported failure, from a real `kubectl apply -f bootstrap.yaml` attempt: Argo's sync
@@ -1952,6 +2187,7 @@ version cert-manager.io/v1`. This passed local `kubectl kustomize gitops/bootstr
 but failed once Argo's own repo-server/application-controller processed the same
 output against a live cluster.
 
+<a id="sec-23-1"></a>
 ### 23.1 Why sync-waves didn't save this, and why that's not a sync-wave bug
 
 Section 21 put `cert-manager.yaml` at `sync-wave: "0"` and the (then-bundled)
@@ -1969,6 +2205,7 @@ genuinely does not exist yet, because cert-manager — the thing that would crea
 CRD — is itself one of the things this same sync is bringing up. Wave `"1"` on the
 resource never got a chance to matter; the failure happened before wave-gating began.
 
+<a id="sec-23-2"></a>
 ### 23.2 The fix: a separate Application, not a suppressed check
 
 Per Argo CD's own docs (`argo-cd.readthedocs.io/en/stable/user-guide/sync-options/`,
@@ -2011,6 +2248,7 @@ it means `bootstrap` doesn't even attempt to create the `cluster-issuer` Applica
 until `cert-manager`'s Application reports Healthy, reducing how often the next
 mechanism below actually has to do anything. But per 23.1, it's a hint, not the fix.
 
+<a id="sec-23-3"></a>
 ### 23.3 `SkipDryRunOnMissingResource=true` — required, and why it's safe to leave on
 
 Added to `cluster-issuer-app.yaml`'s `syncOptions`, matching Argo's documented
@@ -2030,6 +2268,7 @@ for a failure mode that doesn't exist on this resource — worth naming explicit
 since the two options are easy to reach for as a pair out of habit once one of them
 is known to be needed nearby.
 
+<a id="sec-23-4"></a>
 ### 23.4 Verification (rendered, both the split-out piece and everything around it)
 
 - `kubectl kustomize gitops/bootstrap` — exit 0. Resource list is now `AppProject` +
@@ -2057,6 +2296,7 @@ Nothing installed, committed, or pushed as part of this fix.
 
 ---
 
+<a id="sec-24"></a>
 ## 24. kube-prometheus-stack hit the same CRD-size failure as cert-manager (2026-08-17)
 
 Reported failure, same shape as Section 21.4's advance flag on cert-manager, now
@@ -2110,6 +2350,7 @@ still clean. Nothing installed, committed, or pushed.
 
 ---
 
+<a id="sec-25"></a>
 ## 25. Root cause found: RKE2 never bundled a default StorageClass — this was never disabled (2026-08-17)
 
 Reported symptom: all Harbor PVCs `Pending` ("no storage class is set"), no PVCs at
@@ -2119,6 +2360,7 @@ normally ships `rke2-local-path-storage` enabled and asked whether our config tu
 it off. **That premise doesn't hold — worth stating plainly rather than quietly
 working around it**, because the actual fix is different depending on which is true.
 
+<a id="sec-25-1"></a>
 ### 25.1 What was actually checked, and what it shows
 
 `ansible/roles/rke2-server` and `inventory/group_vars/all.yml` were searched for any
@@ -2155,6 +2397,7 @@ was missed until now: the exact `kube-system` HelmChart listing that would have 
 this absence was already captured once, in Section 20.2's ingress investigation — it
 simply wasn't looked at with storage in mind at the time.
 
+<a id="sec-25-2"></a>
 ### 25.2 The fix — and why "enable it via RKE2 config" was never actually an option
 
 Because there's no `disable` entry to omit and no RKE2-native flag to flip (unlike
@@ -2191,6 +2434,7 @@ stack (Section 24), this manifest is small — no 262144-byte annotation risk. A
 either option here would be applying a fix for a failure mode that doesn't exist on
 this resource, the same caution already named in Sections 23.3 and 24.
 
+<a id="sec-25-3"></a>
 ### 25.3 Vendoring discipline: patch what's addressable, edit what isn't, and say which is which
 
 **Step 3 of the request — mark the StorageClass as cluster-default —** done via a
@@ -2213,6 +2457,7 @@ readable than the edit itself, not more disciplined. Pinned to `busybox:1.38.0`
 one deliberate deviation from upstream, so a future re-vendor pass knows exactly what
 to re-apply rather than diffing the whole file blind.
 
+<a id="sec-25-4"></a>
 ### 25.4 Verification (rendered, every level: the sub-kustomization, the wrapping app, and every root)
 
 - `kubectl kustomize gitops/bootstrap/local-path-provisioner` — exit 0. Parsed with
@@ -2235,6 +2480,7 @@ PVCs should bind against the new default StorageClass with no Harbor-side change
 needed — its `values.yaml` never specified a storage class, so it was always relying
 on a cluster default that didn't exist until now.
 
+<a id="sec-25-5"></a>
 ### 25.5 Flagged, not decided: Prometheus on `emptyDir`
 
 Per the request, this is a decision to surface, not one to make unilaterally.
@@ -2248,6 +2494,7 @@ the assignment is grading, and not implemented in this step.
 
 ---
 
+<a id="sec-26"></a>
 ## 26. Storage fix, split by risk: Argo for the live cluster, documentation for Ansible (2026-08-17)
 
 Follow-up to Section 25. The instruction was to fix both the live cluster
@@ -2256,6 +2503,7 @@ Follow-up to Section 25. The instruction was to fix both the live cluster
 instruction — "update the RKE2 disable list" — turned out not to be executable, and
 the real alternative turned out to be a bigger decision than a config tweak.
 
+<a id="sec-26-1"></a>
 ### 26.1 Re-stated plainly: there is nothing to update in RKE2's `disable` list
 
 Section 25.1 already established this, so this is a restatement, not a new finding:
@@ -2269,6 +2517,7 @@ again briefly here because the alternative — quietly inventing a config change
 close: a future reader trusting that comment would believe RKE2 has a storage toggle
 it doesn't have.
 
+<a id="sec-26-2"></a>
 ### 26.2 A real mechanism exists — checked, and deliberately not used
 
 While confirming 26.1, found that RKE2 does have a genuine addon mechanism:
@@ -2300,6 +2549,7 @@ assumed:
 
 Offered both paths explicitly; the operator chose the smaller, safer one.
 
+<a id="sec-26-3"></a>
 ### 26.3 What was actually done in Ansible
 
 `ansible/inventory/group_vars/all.yml` gets a documentation-only addition, placed
@@ -2322,6 +2572,7 @@ that already has to run. The comment's job is narrower and more honest: make sur
 NEXT person reading `all.yml` doesn't have to re-run this entire investigation to
 learn that.
 
+<a id="sec-26-4"></a>
 ### 26.4 The live cluster — unchanged from Section 25, re-verified
 
 No changes to `gitops/bootstrap/local-path-provisioner/` or
@@ -2340,6 +2591,7 @@ docs" and "verify by rendering" again:
   `StorageClass` annotation and the `busybox:1.38.0` pin (Section 25.3) are still
   exactly as vendored — nothing had drifted.
 
+<a id="sec-26-5"></a>
 ### 26.5 Verification
 
 - `ansible mgmt -i ansible/inventory/hosts.ini -c local -m debug` — rendered
@@ -2360,6 +2612,7 @@ not addressed in this step either.
 
 ---
 
+<a id="sec-27"></a>
 ## 27. The storage fix wasn't actually ordered relative to its consumers (2026-08-17)
 
 A fair challenge to Section 25/26's fix: those sections established that a rebuild
@@ -2368,6 +2621,7 @@ it gets it *before* Harbor and kube-prometheus-stack request PVCs. Those are
 different claims, and only the second one actually prevents reproducing the Pending-
 PVC symptom Section 25 investigated.
 
+<a id="sec-27-1"></a>
 ### 27.1 What was actually true before this section
 
 ```
@@ -2389,6 +2643,7 @@ Deployment was actually Ready. This was a real, live gap, not a theoretical one 
 would have reproduced Section 25's exact symptom on the very rebuild this repo's
 storage fix was supposed to prevent.
 
+<a id="sec-27-2"></a>
 ### 27.2 Why the fix belongs on the root apps, not on Harbor or kube-prometheus-stack
 
 Worth stating explicitly, because it's the non-obvious part: `argocd.argoproj.io/
@@ -2406,6 +2661,7 @@ The only place storage and the root apps are siblings in the *same* sync is
 `bootstrap`'s own resource list — so that's the only place a wave annotation between
 them can mean anything.
 
+<a id="sec-27-3"></a>
 ### 27.3 The fix
 
 `local-path-provisioner-app.yaml`: made its wave **explicit** (`"0"`, same value as
@@ -2432,6 +2688,7 @@ don't conflict: the wave annotation governs when *bootstrap* creates the `routa-
 Application object; the missing `automated` block governs whether *routa-prod itself*,
 once created, syncs on its own. Independent concerns, both honored.
 
+<a id="sec-27-4"></a>
 ### 27.4 Verification (rendered — the actual wave numbers, not the annotations in isolation)
 
 Rendered `gitops/bootstrap` and printed every resource's resolved
@@ -2461,6 +2718,7 @@ Nothing installed, committed, or pushed.
 
 ---
 
+<a id="sec-28"></a>
 ## 28. Persistent storage for Prometheus and Alertmanager (2026-08-17)
 
 Flagged as open in Section 25.5, decided now that a default StorageClass exists.
@@ -2468,6 +2726,7 @@ Prometheus and Alertmanager were running on ephemeral `emptyDir` — all metrics
 history and alert state lost on every pod restart or reschedule, independent of
 whether a StorageClass existed.
 
+<a id="sec-28-1"></a>
 ### 28.1 The asymmetry the request warned about — confirmed real
 
 Fetched the pinned chart's own `values.yaml` directly at the exact tag
@@ -2486,6 +2745,7 @@ elsewhere in the same file). Also confirmed `alertmanager.enabled: true` is this
 chart's own default — Alertmanager is genuinely deployed by our existing values
 (nothing disables it), so its storage config isn't a no-op.
 
+<a id="sec-28-2"></a>
 ### 28.2 A second layer of the same asymmetry, found only by rendering — not a problem, but worth recording
 
 Templated the actual pinned chart (`helm template` against the pulled
@@ -2508,6 +2768,7 @@ because it means the values.yaml-level asymmetry (28.1) was the right and only t
 to get right — there wasn't a second, deeper inconsistency lurking in the actual CRD
 schema underneath it that a values-only review would have missed.
 
+<a id="sec-28-3"></a>
 ### 28.3 Design choices in the values
 
 - **`storageClassName: local-path` set explicitly**, not left unset to fall back to
@@ -2523,6 +2784,7 @@ schema underneath it that a values-only review would have missed.
 - **Sizes**: Prometheus 10Gi, Alertmanager 2Gi — modest and deliberate for a demo
   cluster on 100GB node disks, not a capacity-planned figure for a real workload.
 
+<a id="sec-28-4"></a>
 ### 28.4 WaitForFirstConsumer — naming why a `Pending` PVC here is not Section 25 again
 
 `local-path`'s `volumeBindingMode: WaitForFirstConsumer` (set in
@@ -2536,6 +2798,7 @@ both look identical at a glance (`Pending` PVC): Section 25's failure was PVCs
 placement is known. Noted directly in `values.yaml`'s own comment so a future reader
 seeing `Pending` here doesn't reflexively reopen Section 25's investigation.
 
+<a id="sec-28-5"></a>
 ### 28.5 Verification
 
 - `yaml.safe_load` on `values.yaml` — confirmed the exact structure matches the
@@ -2557,6 +2820,7 @@ Nothing installed, committed, or pushed.
 
 ---
 
+<a id="sec-29"></a>
 ## 29. Prometheus Operator running but not reconciling — stale webhook certs (2026-08-18)
 
 After the kube-prometheus-stack CRDs applied in two batches (02:42, then 03:42 once
@@ -2582,6 +2846,7 @@ Nothing installed, committed, or pushed as part of logging this.
 
 ---
 
+<a id="sec-30"></a>
 ## 30. TLS enabled on Harbor (2026-08-18)
 
 Harbor was serving plain HTTP on a public IP — a real security gap, and a blocker
@@ -2589,6 +2854,7 @@ for `docker push`/`docker login` (Docker refuses to talk to an insecure registry
 without `--insecure-registry`, which is not something to rely on for task 3). Fixed
 using the same cert-manager + Traefik pattern already proven for Rancher and Argo CD.
 
+<a id="sec-30-1"></a>
 ### 30.1 Traced the actual chart templates, not just the values.yaml comments
 
 Pulled the pinned chart (`harbor@1.19.2`) and read `templates/ingress/ingress.yaml`
@@ -2615,6 +2881,7 @@ instead of a real Let's Encrypt one — exactly the "wrong mode, wrong silent re
 failure mode this instruction asked to guard against, and exactly the kind of thing
 that would not show up as an error, only as a browser warning nobody was expecting.
 
+<a id="sec-30-2"></a>
 ### 30.2 The values
 
 ```
@@ -2632,6 +2899,7 @@ and override values, so this preserves the chart's own default
 on this Ingress rather than dropping them. Confirmed by rendering (30.3), not assumed
 from general Helm knowledge alone.
 
+<a id="sec-30-3"></a>
 ### 30.3 `letsencrypt-production` used directly — a deliberate exception to staging-first, stated plainly
 
 Every earlier cert on this cluster (Rancher, Argo CD) went staging-first per Section
@@ -2642,6 +2910,7 @@ informed exception to that discipline, not a reversion to skipping it — confir
 both `ClusterIssuer`s are `READY=True` and have been for over two hours before making
 this call, rather than assuming they still are.
 
+<a id="sec-30-4"></a>
 ### 30.4 Section 18 lesson — checked, confirmed not applicable, said so anyway
 
 Per instruction, explicitly checked rather than waved away: `kubectl get secrets -n
@@ -2652,6 +2921,7 @@ anyway: if `harbor-ingress-tls` is ever left behind by a failed attempt and this
 hostname is reused, that secret would need deleting to force re-issuance, exactly as
 it did for Rancher.
 
+<a id="sec-30-5"></a>
 ### 30.5 Verification — rendered against the real pinned chart, not just parsed
 
 `helm template` against the actual pulled `harbor-1.19.2.tgz` with
@@ -2684,6 +2954,7 @@ Nothing installed, committed, or pushed.
 
 ---
 
+<a id="sec-31"></a>
 ## 31. demo-app image: arm64 build, amd64 nodes (2026-08-18)
 
 After pushing `harbor.95.133.252.180.sslip.io/routa/demo-app:v1`, the Deployment
@@ -2705,12 +2976,14 @@ Nothing else about the Harbor/TLS/GitOps path needed touching.
 
 ---
 
+<a id="sec-32"></a>
 ## 32. Argo CD SSO via Dex + GitHub OAuth (2026-08-18)
 
 Plan and manifests only in this section — the Secret creation is imperative and run
 by the operator directly, never through Git. Nothing pushed or committed as part of
 this entry.
 
+<a id="sec-32-1"></a>
 ### 32.1 Callback path — verified against current docs, matches what's already registered
 
 `/api/dex/callback` confirmed against
@@ -2721,6 +2994,7 @@ GitHub OAuth App's registered redirect URI,
 `https://argocd.95.133.252.180.sslip.io/api/dex/callback`, is already correct. No
 change needed on the GitHub side.
 
+<a id="sec-32-2"></a>
 ### 32.2 Config location — traced in the pinned chart, not assumed
 
 Two candidate locations existed in the chart's values schema, and only one is
@@ -2734,6 +3008,7 @@ the literal dotted key `"dex.config"` (chart's own commented-out example, lines
 pinned chart + our values and finding `dex.config` present with exactly the intended
 content, byte for byte.
 
+<a id="sec-32-3"></a>
 ### 32.3 `useLoginAsID` — the non-obvious flag that makes username-based RBAC possible at all
 
 Without an org/team to scope the GitHub connector against, the natural read is "just
@@ -2750,6 +3025,7 @@ pattern (matching on `email` instead) was deliberately not used here since it wo
 put a personal email address in a policy.csv line in a public repository, when the
 GitHub username is already public in this repo's own remote URL.
 
+<a id="sec-32-4"></a>
 ### 32.4 No `orgs:` — a real access consequence, not a missing detail
 
 No org/team exists to scope the connector against, so `orgs:` is omitted entirely.
@@ -2760,6 +3036,7 @@ authentication succeeding must not by itself imply any access. `role:readonly` i
 one of Argo CD's built-in roles (no `p,` lines needed to define it) and grants
 view-only access; only the one `g,` binding below grants anything more.
 
+<a id="sec-32-5"></a>
 ### 32.5 The RBAC mapping — proposed, not yet confirmed
 
 ```
@@ -2778,6 +3055,7 @@ the operator) is stuck at `role:readonly` until corrected. Not a lockout risk be
 (Section 20.6) remains a separate, always-available fallback login independent of
 SSO entirely.
 
+<a id="sec-32-6"></a>
 ### 32.6 The Secret — imperative, never through Git
 
 ```bash
@@ -2801,6 +3079,7 @@ silent skip. Deliberately a **separate** Secret (`argocd-github-oauth`), not an
 addition to the chart's own `argocd-secret` — that Secret is managed by Argo CD
 itself (session signing key, admin password hash) and this avoids hand-editing it.
 
+<a id="sec-32-7"></a>
 ### 32.7 Verification
 
 - `helm template` against the actual pulled `argo-cd-10.4.0.tgz` chart, not just
@@ -2821,12 +3100,14 @@ operator to run directly, outside this session's write path, per instruction.
 
 ---
 
+<a id="sec-33"></a>
 ## 33. SSO implemented on Rancher and Argo CD (2026-08-18)
 
 Section 32 was the Argo CD SSO plan; this records what actually got built and
 applied for both Rancher and Argo CD, and the one live snag hit doing it.
 
-### Argo CD — GitHub OAuth via Dex
+<a id="sec-33-1"></a>
+### 33.1 Argo CD — GitHub OAuth via Dex
 
 Built per Section 32's plan, applied as planned. The two-candidate config-location
 question resolved to `configs.cm`'s `"dex.config"` key, not the chart's top-level
@@ -2841,7 +3122,8 @@ honors `$secret:key` syntax for Secrets carrying that label; missing it is a sil
 no-op, not an error. RBAC: `policy.default: role:readonly` (authentication alone
 never implies access) plus one explicit `g, AmirMoshfeghi, role:admin` binding.
 
-### Rancher — native GitHub auth provider
+<a id="sec-33-2"></a>
+### 33.2 Rancher — native GitHub auth provider
 
 Separate GitHub OAuth App from Argo CD's, with its own callback requirement — Rancher
 and Dex don't share one. An initial guess at the callback path assumed a
@@ -2863,6 +3145,7 @@ Both are live: GitHub login works end-to-end on Rancher
 
 ---
 
+<a id="sec-34"></a>
 ## 34. Argo CD flipped to Let's Encrypt production (2026-08-18)
 
 Same class of issue as Section 18 (Rancher) and Section 30 (Harbor): Argo CD's
@@ -2906,6 +3189,7 @@ Nothing pushed as part of this change.
 
 ---
 
+<a id="sec-35"></a>
 ## 35. `project.yaml` sourceRepos tightened from `"*"` (2026-08-18)
 
 The TODO flagged since Section 22.3 and never circled back to (confirmed still open
@@ -2954,12 +3238,14 @@ Nothing pushed as part of this change.
 
 ---
 
+<a id="sec-36"></a>
 ## 36. Kueue (bonus task) added (2026-08-18)
 
 The last unstarted item on the optional list (Section 1.1/1.2) — the brief calls it
 out specifically because Verda documents Kueue for their own Instant Clusters, so
 this is a real Verda-operated capability, not generic filler. Built, not yet pushed.
 
+<a id="sec-36-1"></a>
 ### 36.1 Version, verified two ways — and a real doc-vs-tag mismatch caught by that
 
 `kueue.sigs.k8s.io/docs/getting-started/installation/` names **v0.19.1** as current
@@ -2982,6 +3268,7 @@ consistently with what Verda's own Instant Clusters Kueue doc
 Section 5) references. **v1beta2 used throughout** — the doc page's prose was stale
 relative to its own pinned tag's files, not the other way around.
 
+<a id="sec-36-2"></a>
 ### 36.2 Architecture: cluster singleton, same shape as cert-manager/ClusterIssuer
 
 Kueue's CRDs (`ClusterQueue`, `ResourceFlavor`, `Workload`, `LocalQueue`, etc.) are
@@ -3020,6 +3307,7 @@ last-applied-configuration limit client-side apply would try to store. Applying 
 already-learned pattern ahead of the failure, rather than waiting to rediscover it, is
 the point of writing these decisions down in the first place.
 
+<a id="sec-36-3"></a>
 ### 36.3 The demo: sized to actually prove queueing, not just installation
 
 `gitops/platform/kueue-demo/` (namespaced — `kueue-demo` — so it follows the
@@ -3053,6 +3341,7 @@ the mechanism.
 rather than sitting `Completed` forever, and so a future edit to these Jobs' specs
 doesn't hit "field is immutable" against a `Completed` Job Argo still owns.
 
+<a id="sec-36-4"></a>
 ### 36.4 A pre-existing condition this inherits, not one it creates
 
 Live-cluster check (`kubectl get applications -n argocd`) surfaced something worth
@@ -3081,6 +3370,7 @@ fix is most likely a `namePrefix: dev-`/`staging-`/`prod-` (or similar) in each
 environment overlay, which Argo CD's own multi-environment app-of-apps examples use
 for exactly this reason.
 
+<a id="sec-36-4b"></a>
 ### 36.4b Demo runtime bumped 60s → 180s — the quota was never wrong, the window was too short (2026-08-18)
 
 Once this was actually live, the demo didn't show what it was built to show: both
@@ -3115,6 +3405,7 @@ cascades to each Job's Pods and its Kueue `Workload` object via normal Kubernete
 garbage collection (both carry an `ownerReference` to the Job) — no separate
 `kubectl delete workload`/`pod` needed.
 
+<a id="sec-36-5"></a>
 ### 36.5 Verification
 
 - `kubectl kustomize` (kustomize v5.8.1, bundled with kubectl v1.36.3) against every
@@ -3149,6 +3440,7 @@ chart, not a live dry-run) when a live CRD dependency would otherwise be require
 
 ---
 
+<a id="sec-37"></a>
 ## 37. Environment Application-name collision: root cause confirmed, orphaned resources cleaned up, root cause NOT fixed (2026-08-18)
 
 Investigated in response to a direct question about the "improve with more time" item
@@ -3157,6 +3449,7 @@ situation cosmetic, or a real bug? It's real. This entry records what was found,
 was cleaned up (by Argo CD itself, not by hand — see 37.3), and what is deliberately
 left open.
 
+<a id="sec-37-1"></a>
 ### 37.1 Root cause, confirmed directly against the live cluster
 
 `gitops/environments/{dev,staging,prod}/kustomization.yaml` all list `resources:
@@ -3179,6 +3472,7 @@ collision detector, not a conclusion reached by inspection.
 built as a single shared instance across environments from the start (36.3), so it
 never had a competing per-environment name to begin with.
 
+<a id="sec-37-2"></a>
 ### 37.2 Correction: this is what was actually behind `kube-prometheus-stack`'s bad health
 
 Originally reported to the operator as "unrelated" — wrong, corrected here.
@@ -3194,6 +3488,7 @@ DaemonSet in an orphaned namespace was dragging `kube-prometheus-stack`'s report
 health to `Progressing` even though the live, correctly-routed copy in `monitoring`
 was fully healthy the entire time. Same bug as 37.1, not a second one.
 
+<a id="sec-37-3"></a>
 ### 37.3 A live, cluster-wide side effect checked *before* anything was deleted
 
 Before touching anything, checked whether the orphaned `monitoring-staging` copy had
@@ -3220,6 +3515,7 @@ already part of the live Application's own desired manifest (`requiresPruning`
 unset, `status: OutOfSync` instead) — deleting the orphaned namespace does not
 delete these; they stay, correctly, as the live Application's own resources.
 
+<a id="sec-37-4"></a>
 ### 37.4 What actually got cleaned up — and by whom
 
 Plan going in was to run `kubectl delete namespace monitoring-staging` by hand plus
@@ -3253,6 +3549,7 @@ loop rather than a manual `kubectl delete`. `demo-staging` namespace was left
 untouched: confirmed genuinely empty (no PVCs, no workloads), so there was nothing
 there costing anything to clean up.
 
+<a id="sec-37-5"></a>
 ### 37.5 What's still actually broken — cleanup is not a fix
 
 **The root cause (37.1) is unresolved.** `routa-staging` and `routa-prod` still read
@@ -3283,6 +3580,7 @@ switching the promotion model to something that doesn't depend on them existing)
 Neither attempted here — this entry documents the finding and the immediate
 cleanup only, per instruction to scope the structural fix separately.
 
+<a id="sec-37-6"></a>
 ### 37.6 Verification
 
 - `kubectl get application <name> -n argocd -o json`, `status.resources[]` and
@@ -3302,6 +3600,7 @@ cleanup only, per instruction to scope the structural fix separately.
   `syncPolicy.automated` on `kube-prometheus-stack`/`harbor`, not via any command run
   in this session.
 
+<a id="sec-37-7"></a>
 ### 37.7 `routa-staging`'s auto-sync removed — closes the recurrence risk 37.5 flagged, not the root cause
 
 37.5 left the root cause (37.1, no `namePrefix`) explicitly unfixed and warned the
