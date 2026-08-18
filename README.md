@@ -22,13 +22,19 @@ All three on Let's Encrypt production certificates via cert-manager, not self-si
 
 - **Rancher**, managing the 3-server RKE2 HA control plane it imported.
 - **Argo CD**, self-managing (it deploys and reconciles its own installation via
-  Git) as an app-of-apps, with dev → staging → prod promotion via git ref and a
-  manual sync gate on prod.
+  Git) as an app-of-apps, with dev → staging → prod promotion via git ref. Only dev
+  auto-syncs; staging and prod both require a manual sync gate (see `decisions.md`
+  for why staging's was added after dev/staging/prod turned out to share child
+  Application names).
 - **Harbor**, serving a real image (`demo-app`) that's been pushed and pulled
   through it — the GitOps loop closes through infrastructure this platform built
   itself, not an external registry.
 - **kube-prometheus-stack**, with persistent storage (not ephemeral `emptyDir`) on
   the cluster's own default `local-path` StorageClass.
+- **Kueue** (bonus), for job queueing and quota management — a `ClusterQueue` with a
+  tight CPU quota and a demo (`gitops/platform/kueue-demo/`) that proves real FIFO
+  admission: two `Job`s together exceed the quota, so the second visibly waits on the
+  first.
 - **GitHub SSO** on both Rancher and Argo CD.
 
 ## Architecture
@@ -44,10 +50,12 @@ routa-cp-1..3:         RKE2 3-server HA control plane (etcd quorum, schedulable)
         ↓
 Argo CD (self-managing, app-of-apps)
   gitops/bootstrap/    Argo CD itself, cert-manager, Let's Encrypt ClusterIssuers,
-                       local-path-provisioner — cluster-wide singletons, synced once
-                       per cluster rather than once per environment
-  gitops/platform/     kube-prometheus-stack, Harbor, demo app
-                       promoted dev → staging → prod via git ref + manual gate
+                       local-path-provisioner, Kueue (bonus) — cluster-wide
+                       singletons, synced once per cluster rather than once per
+                       environment
+  gitops/platform/     kube-prometheus-stack, Harbor, demo app, Kueue demo
+                       promoted dev → staging → prod via git ref; dev auto-syncs,
+                       staging and prod both require a manual sync gate
 ```
 
 ## Repository layout

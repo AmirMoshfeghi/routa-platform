@@ -20,6 +20,7 @@ At a glance:
 - **Harbor**, deployed via Argo, with a pushed image that the cluster pulls at runtime — a genuine end-to-end registry loop, not just an install.
 - **kube-prometheus-stack** (Prometheus, Alertmanager, Grafana), with persistent storage, monitoring the cluster. Full alerting strategy for production in [`docs/alerting.md`](alerting.md).
 - **Security hardening**: non-root SSH access with root login disabled, a default-deny firewall with node-to-node traffic restricted to cluster peer IPs only, and scoped, expiring API credentials.
+- **Kueue** (bonus): job queueing and quota management, deployed via Argo like everything else — a `ClusterQueue` with a deliberately tight CPU quota and a two-`Job` demo that proves real FIFO admission, not just installation: the second `Job` stays suspended (`QuotaReserved: False`) until the first completes and releases quota. CPU-only here since the assignment provisioned CPU nodes, but the same mechanism (`ResourceFlavor` + `ClusterQueue` quotas) is exactly how a GPU cloud enforces fair-share scheduling across tenants — directly relevant to Verda's own domain, which is why Verda documents Kueue for their own Instant Clusters.
 - **SSO on both Rancher and Argo CD**, via GitHub OAuth — Argo through Dex, Rancher through its native GitHub auth provider. Two separate OAuth Apps, RBAC scoped so authentication alone doesn't imply access (`policy.default: role:readonly` on Argo, explicit admin mapping to my GitHub identity on both).
 - **AI-assisted engineering** throughout, using Claude for architecture and review and Claude Code (with Verda's own MCP server) for implementation — documented in [`docs/ai-usage.md`](ai-usage.md), including specific cases where AI output was wrong and how that was caught.
 
@@ -55,12 +56,16 @@ Argo CD (self-managing, app-of-apps)
    ├── local-path-provisioner (dynamic storage — RKE2 ships none by default)
    ├── Harbor (registry, TLS via cert-manager)
    ├── kube-prometheus-stack (Prometheus + Alertmanager + Grafana, persistent)
+   ├── Kueue (bonus — job queueing/quota management, ClusterQueue + demo Jobs)
    └── demo-app (pulls its image from Harbor — closes the GitOps loop)
 
 Promotion: environments/dev → staging → prod, same base manifests,
-per-environment Kustomize overlays, different git refs. dev/staging
-auto-sync; prod requires a manual `argocd app sync` — a deliberate gate,
-not an oversight.
+per-environment Kustomize overlays, different git refs. Only dev
+auto-syncs; staging and prod both require a manual `argocd app sync` —
+a deliberate gate for prod from the start, extended to staging after
+dev/staging/prod were found to share child Application object names
+(no per-environment prefix), which let a staging auto-sync silently
+overwrite dev's live state on a race (full account in `decisions.md`).
 ```
 
 **Why this shape, briefly** (full reasoning in `decisions.md`):
@@ -71,14 +76,16 @@ not an oversight.
 - **Rancher on a separate node from the workload cluster**, because a cluster manager that lives inside the cluster it manages can't recover it if it goes down.
 - **DNS via sslip.io, TLS via cert-manager + Let's Encrypt**, validated on staging first and switched to production once the path was proven — avoiding sslip.io's shared rate-limit quota as a first-attempt risk.
 
-**Screenshots** *(place your renamed files in `docs/screenshots/` and reference here — see mapping below)*:
+**Screenshots**:
 - `docs/screenshots/rancher-cluster-imported.png` — Rancher showing `routa-rke2` Active
 - `docs/screenshots/rancher-github-sso.png` — Rancher login via GitHub SSO
 - `docs/screenshots/argocd-app-tree.png` — the full Argo CD application tree, all Synced/Healthy
 - `docs/screenshots/argocd-github-sso.png` — Argo CD login via GitHub SSO
 - `docs/screenshots/argocd-prod-gate.png` — `routa-prod`'s manifest showing no `automated` sync policy
-- `docs/screenshots/grafana-dashboard.png` — a live Grafana dashboard
+- `docs/screenshots/grafana-cluster.png` — live Grafana Kubernetes cluster overview dashboard
+- `docs/screenshots/grafana-prometheus.png` — live Grafana Prometheus/monitoring-stack dashboard
 - `docs/screenshots/harbor-image.png` — the pushed image in Harbor
+- `docs/screenshots/kueue-queueing.png` — `kubectl get workloads -n kueue-demo` showing job-b `Admitted: False`, suspended behind job-a's quota
 
 ---
 
@@ -104,6 +111,7 @@ The brief weights debugging approach over a clean happy path, so this section is
 | TLS silently stayed on the staging (untrusted) cert after switching to production | cert-manager won't re-issue a certificate while a valid one already exists in the secret — an Issuer's ACME environment changing isn't itself a renewal trigger | First seen on Rancher: browser and phone both flagged the cert as untrusted; `openssl s_client` confirmed the issuer was still Let's Encrypt *staging*. Recognized instantly and fixed the same way on Harbor and Argo CD once the pattern was known. | Delete the TLS secret to force a fresh request against the now-production Issuer — same fix, three times, once the root cause was understood |
 | The Prometheus Operator stopped reconciling | CRDs were applied in two batches an hour apart; the operator's admission webhook TLS appears to have gone stale in between | The CR showed `DESIRED 1` but blank `READY`/`RECONCILED`, and `Events: <none>` — the operator had never attempted reconciliation, not failed at it | Restarted the operator deployment; it re-established its watches and created the missing StatefulSets |
 | A pushed image failed to pull on the cluster | Built on Apple Silicon (arm64); RKE2 nodes are amd64 | `ImagePullBackOff` — `no match for platform in manifest` | Rebuilt with `docker build --platform linux/amd64` |
+| Kueue's queueing demo didn't visibly demonstrate queueing | Not a Kueue bug — the demo Jobs ran only 60s each, so the full sequence (admit job-a → run → finish → admit job-b → run → finish) completed in under 2 minutes, easy to check after the fact and see both already `Admitted: True, Finished: True` with no contention caught in progress | Checked the mechanism itself first, live, before assuming it was broken: `kubectl get clusterqueue` showed `ADMITTED WORKLOADS: 1` throughout, never 2 — quota enforcement was correct the whole time | Bumped both Jobs to `sleep 180`, giving a ~3-minute window where job-b visibly sits `Admitted: False` behind job-a — the fix was to the observation window, not the quota |
 
 The thread running through all of these: **local success does not imply cluster success.** `kubectl kustomize`, `terraform fmt`, and `--syntax-check` all passed on configs that failed once they hit a live API server, a live registry limit, or a live architecture mismatch. The fix, applied consistently after the first time this bit me, was to verify by rendering against the real target — Argo's repo-server, the pinned Helm chart, or the live cluster — rather than trusting a local, unvalidated pass.
 
@@ -124,10 +132,9 @@ The thread running through all of these: **local success does not imply cluster 
 ## 5. What I'd improve with more time
 
 - **API-endpoint HA.** etcd tolerates a node failure; the kubeconfig and Rancher's import both currently point at one node's IP for API access. A real load balancer or DNS record in front of all three servers would remove that single point of failure. Deferred here because standing up an LB just to relocate the same single point of failure onto another node isn't a real fix — the three server IPs are already in the TLS SAN list, so adding a proper endpoint later is a config change, not a rebuild.
-- **Harbor's `sourceRepos: ["*"]`.** The AppProject currently trusts any Git source; tightening it to the exact list this platform actually uses (this repo, the Argo Helm chart repo, the cert-manager OCI registry, Harbor's chart repo, kube-prometheus-stack's chart repo) is a small change I'd make before calling this production-ready.
 - **GPU support.** The brief directs CPU provisioning, and I kept it that way rather than spending credits chasing GPU capacity. If this were extended: the NVIDIA GPU Operator for driver/device-plugin management, `nvidia.com/gpu` resource requests and node taints for scheduling, and a DCGM exporter feeding both Grafana and the alerting tiers described in the monitoring section — idle GPU time is the most expensive thing a platform like this can waste, so I'd treat GPU utilization as a cost signal, not just a capacity one.
 - **A prioritized fallback instance type list, not a single hardcoded SKU.** The mid-build capacity failure showed that on-demand inventory on this platform is genuinely volatile — an instance type validated minutes before `apply` can vanish during it. Terraform has no native "first available from this list" primitive; a small wrapper or a documented manual fallback procedure would make rebuilds more resilient to this.
-- **KWOK and Kueue**, from the bonus list — not attempted, given the time spent on hardening the core build properly rather than adding breadth. Both would be natural additions to demonstrate cluster-scale thinking and job-priority scheduling respectively.
+- **KWOK**, from the bonus list — not attempted, given the time spent on hardening the core build properly rather than adding breadth. Would be a natural addition to demonstrate cluster-scale thinking (simulating ~100 nodes) without the cost of provisioning them for real.
 
 ---
 
