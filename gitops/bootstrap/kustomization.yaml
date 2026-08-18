@@ -5,10 +5,15 @@ resources:
   - bootstrap.yaml
   - argocd.yaml
   - cert-manager.yaml
-  - cluster-issuer.yaml
+  - cluster-issuer-app.yaml
   - root-dev.yaml
   - root-staging.yaml
   - root-prod.yaml
 # argocd-values.yaml is deliberately NOT listed here: it's a plain Helm values file
 # (no apiVersion/kind) consumed by argocd.yaml's multi-source $values ref, not a
 # Kubernetes resource Kustomize should try to parse.
+#
+# cluster-issuer/ (the directory) is ALSO deliberately not listed here — it is no
+# longer part of bootstrap's own resource set. cluster-issuer-app.yaml is the
+# Application that points AT that directory as its own separate sync target. See
+# docs/decisions.md Section 23 for why this had to be split out.

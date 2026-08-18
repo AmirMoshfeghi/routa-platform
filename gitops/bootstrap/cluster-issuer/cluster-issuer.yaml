@@ -1,5 +1,25 @@
 # Let's Encrypt ClusterIssuers, HTTP-01 via the RKE2 cluster's Traefik ingress class.
-# Cluster-scoped, so — same reasoning as cert-manager.yaml — this lives in
+#
+# MOVED here (from a bare resource inside gitops/bootstrap/'s own kustomize build)
+# on 2026-08-17, in response to a real Argo CD sync failure — see
+# gitops/bootstrap/cluster-issuer-app.yaml and docs/decisions.md Section 23 for the
+# full explanation. Short version: these objects depend on a CRD
+# (clusterissuers.cert-manager.io) that cert-manager.yaml installs, and bundling a
+# CRD-dependent CR in the SAME Application/sync as unrelated resources means Argo's
+# comparison/dry-run pass over that Application's WHOLE resource list trips over the
+# not-yet-registered kind — regardless of any sync-wave annotation on the resource
+# itself, because sync-waves order *apply*, not the validation pass that happens
+# before it. This directory is now its own Application specifically so its
+# validation/apply cycle is independent of bootstrap's.
+#
+# No sync-wave annotation on these objects anymore — that ordering hint now lives on
+# the wrapping Application (cluster-issuer-app.yaml) as one of bootstrap's own
+# managed resources, not here. A wave annotation on these two objects would be
+# meaningless in isolation (nothing else in this directory to order against) and
+# would misleadingly imply a cross-Application ordering guarantee that this
+# annotation, at this level, cannot actually provide.
+#
+# Cluster-scoped, so — same reasoning as cert-manager.yaml — this stays under
 # gitops/bootstrap/, not gitops/platform/ (three environment copies would collide on
 # one cluster-scoped resource).
 #
@@ -23,15 +43,6 @@ apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
   name: letsencrypt-staging
-  annotations:
-    # Must wait for cert-manager (wave 0) to be Synced AND Healthy — its CRD
-    # (clusterissuers.cert-manager.io) does not exist until then, so applying this
-    # in the same wave would fail the very first bootstrap. Waves progress only when
-    # all resources in the current wave are synced and healthy (confirmed against
-    # argo-cd.readthedocs.io/en/stable/user-guide/sync-waves/), and a child
-    # Application's health reflects whether ITS OWN deployed resources are healthy —
-    # so wave 1 genuinely waits for cert-manager to be running, not just requested.
-    argocd.argoproj.io/sync-wave: "1"
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
@@ -47,8 +58,6 @@ apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
   name: letsencrypt-production
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory

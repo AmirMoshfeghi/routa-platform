@@ -1940,3 +1940,117 @@ repoURL: https://github.com/AmirMoshfeghi/routa-platform   (harbor values source
 repoURL: https://prometheus-community.github.io/helm-charts  (kube-prometheus-stack chart)
 repoURL: https://github.com/AmirMoshfeghi/routa-platform   (kube-prometheus-stack values)
 ```
+
+---
+
+## 23. Bootstrap sync failure: ClusterIssuer bundled in the same Application as cert-manager (2026-08-17)
+
+Reported failure, from a real `kubectl apply -f bootstrap.yaml` attempt: Argo's sync
+of the `bootstrap` Application errored with `no matches for kind ClusterIssuer in
+version cert-manager.io/v1`. This passed local `kubectl kustomize gitops/bootstrap`
+(pure offline YAML templating — it doesn't know or care what kind a resource is)
+but failed once Argo's own repo-server/application-controller processed the same
+output against a live cluster.
+
+### 23.1 Why sync-waves didn't save this, and why that's not a sync-wave bug
+
+Section 21 put `cert-manager.yaml` at `sync-wave: "0"` and the (then-bundled)
+`cluster-issuer.yaml` at `sync-wave: "1"`, reasoning that waves only advance once
+everything in the current wave is Synced and Healthy. That reasoning is correct as
+far as it goes — but it answers the wrong question. Sync-waves order *when Argo
+applies* resources within one Application's sync. They say nothing about the
+*validation/comparison pass* Argo runs over an Application's entire target resource
+list to build that sync plan in the first place. `project.yaml`, `bootstrap.yaml`,
+`argocd.yaml`, `cert-manager.yaml`, and (in the old shape) `cluster-issuer.yaml` were
+all resources belonging to the SAME Application (`bootstrap`) and therefore the SAME
+comparison pass — and that pass needs every target kind registered on the API server
+to process the list at all. On a first bootstrap, `clusterissuers.cert-manager.io`
+genuinely does not exist yet, because cert-manager — the thing that would create that
+CRD — is itself one of the things this same sync is bringing up. Wave `"1"` on the
+resource never got a chance to matter; the failure happened before wave-gating began.
+
+### 23.2 The fix: a separate Application, not a suppressed check
+
+Per Argo CD's own docs (`argo-cd.readthedocs.io/en/stable/user-guide/sync-options/`,
+verified 2026-08-17), there are exactly two supported shapes for "a CR depends on a
+CRD that might not exist yet":
+
+1. **CRD and CR in the same sync** — Argo auto-skips the dry run for the CR; no
+   configuration needed. (Not our case: cert-manager's CRDs and the ClusterIssuers
+   were never going to be in the literal same Helm/Kustomize render — cert-manager's
+   CRDs come from its own chart.)
+2. **CRD created elsewhere** — "the CRD is not part of the sync, but it could be
+   created in another way, e.g. by a controller in the cluster" — Argo's own example
+   is Gatekeeper, structurally identical to our cert-manager case. Docs are explicit
+   this fails without a flag: *"Argo CD cannot find the CRD in the sync and will
+   fail... `the server could not find the requested resource`"* — matching the
+   reported error almost verbatim.
+
+Restructured to match shape 2 properly:
+
+```
+gitops/bootstrap/cluster-issuer-app.yaml   NEW — Application wrapping the directory below
+gitops/bootstrap/cluster-issuer/
+  cluster-issuer.yaml                      MOVED from gitops/bootstrap/cluster-issuer.yaml
+gitops/bootstrap/kustomization.yaml        (modified) cluster-issuer.yaml -> cluster-issuer-app.yaml
+```
+
+`cluster-issuer/` has no `kustomization.yaml` — confirmed against
+`argo-cd.readthedocs.io/en/stable/user-guide/directory/` that Argo CD auto-detects a
+path with no `kustomization.yaml`/`Chart.yaml`/Jsonnet marker as a plain-manifest
+"Directory" app and applies the YAML directly, **without invoking Kustomize on that
+path at all**. That's the actual mechanism of the fix: the ClusterIssuer objects no
+longer go through the same `kustomize build --enable-helm` render, or the same
+Application comparison pass, as `bootstrap`'s own resource list. They get their own,
+independent sync cycle.
+
+The wave annotation moved with the restructure: `cluster-issuer-app.yaml` (the
+Application object, one of `bootstrap`'s own managed resources) carries
+`sync-wave: "1"`, `cert-manager.yaml` stays at `"0"`. This is still worth keeping —
+it means `bootstrap` doesn't even attempt to create the `cluster-issuer` Application
+until `cert-manager`'s Application reports Healthy, reducing how often the next
+mechanism below actually has to do anything. But per 23.1, it's a hint, not the fix.
+
+### 23.3 `SkipDryRunOnMissingResource=true` — required, and why it's safe to leave on
+
+Added to `cluster-issuer-app.yaml`'s `syncOptions`, matching Argo's documented
+scenario-2 remedy exactly. Safe as a standing setting, not just a one-time unblock:
+the same docs page states *"The dry run will still be executed if the CRD is already
+present in the cluster"* — it only skips dry-run in the genuinely-missing case, so
+once cert-manager is up and stays up, ordinary validation resumes on every later sync.
+
+**Deliberately did NOT add `ServerSideApply=true` to this Application** — the
+question was asked directly and the answer is no, for a specific reason: that option
+(already correctly present on `cert-manager.yaml`) solves an unrelated problem —
+cert-manager's own CRDs are large enough to exceed the 262144-byte
+last-applied-configuration annotation limit under client-side apply (Section 21.4).
+The ClusterIssuer objects are tiny; there is no annotation-size problem here.
+Copying `ServerSideApply=true` onto this Application anyway would be applying a fix
+for a failure mode that doesn't exist on this resource — worth naming explicitly
+since the two options are easy to reach for as a pair out of habit once one of them
+is known to be needed nearby.
+
+### 23.4 Verification (rendered, both the split-out piece and everything around it)
+
+- `kubectl kustomize gitops/bootstrap` — exit 0. Resource list is now `AppProject` +
+  6 `Application` objects only (`argocd`, `bootstrap`, `cert-manager`,
+  `cluster-issuer`, `routa-dev`, `routa-staging`, `routa-prod`) — **zero**
+  `ClusterIssuer` objects in this build, confirmed by listing every rendered
+  kind/name, not just checking the exit code. That absence is the actual fix:
+  `bootstrap`'s own comparison pass no longer has anything cert-manager-dependent
+  in it.
+- `gitops/bootstrap/cluster-issuer-app.yaml` rendered inside that same build,
+  checked field-by-field: `sync-wave: "1"`, `path: gitops/bootstrap/cluster-issuer`,
+  `syncOptions` contains `SkipDryRunOnMissingResource=true` and does NOT contain
+  `ServerSideApply=true`.
+- `gitops/bootstrap/cluster-issuer/cluster-issuer.yaml` parsed directly with
+  `yaml.safe_load_all` (not via `kubectl kustomize`, which requires a
+  `kustomization.yaml` and would fail on this directory for an unrelated, expected
+  reason) — both `ClusterIssuer` objects present and well-formed.
+- Re-built `gitops/platform` and all three `gitops/environments/*` overlays — exit 0
+  on all four, confirming the restructure didn't disturb anything outside
+  `gitops/bootstrap/`.
+- Full `REPLACE_ME` sweep across `gitops/` — zero remaining (the one legitimate
+  survivor from Section 22 was resolved separately before this step).
+
+Nothing installed, committed, or pushed as part of this fix.

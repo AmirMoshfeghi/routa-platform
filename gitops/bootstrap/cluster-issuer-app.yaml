@@ -1,0 +1,70 @@
+# Wraps gitops/bootstrap/cluster-issuer/ as its own Application, separate from
+# cert-manager.yaml and separate from bootstrap's own resource list. This is a
+# structural fix, not a validation-suppression one — see docs/decisions.md Section 23
+# for the full incident: bundling the ClusterIssuer objects as bare resources inside
+# gitops/bootstrap/'s own kustomize build (the previous shape of this file, as
+# cluster-issuer.yaml) made them part of the SAME Application/sync as project.yaml,
+# argocd.yaml, cert-manager.yaml and the root apps. Argo's comparison/dry-run pass
+# processes an Application's ENTIRE target resource list together, and that pass
+# needs every resource's kind registered on the API server — sync-wave annotations
+# only control the ORDER OF APPLY within that pass, not whether the pass itself can
+# complete. So even with the ClusterIssuer objects annotated wave "1", the initial
+# validation of bootstrap's full manifest set tripped over "no matches for kind
+# ClusterIssuer in version cert-manager.io/v1" before wave-gating ever got a chance
+# to help — the CRD genuinely does not exist yet the first time bootstrap is synced,
+# since cert-manager is one of the things THAT SAME SYNC is bringing up.
+#
+# The fix: give the ClusterIssuer objects their own Application, with its own
+# independent comparison/apply cycle, decoupled from bootstrap's. This is the
+# standard, docs-recognized shape for "a CR whose CRD is installed by something
+# else" — see the syncOptions comment below.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-issuer
+  namespace: argocd
+  annotations:
+    # Ordering hint for BOOTSTRAP's own sync (this Application object is wave 1,
+    # cert-manager.yaml is wave 0) — bootstrap won't even create this Application
+    # until cert-manager's Application reports Healthy, which minimizes how often
+    # this Application's own first sync attempt actually races the CRD. This alone
+    # does not make the race impossible (Argo's auto-sync loop and this
+    # Application's own reconcile timing aren't perfectly coupled to bootstrap's wave
+    # completion instant), which is exactly why SkipDryRunOnMissingResource below is
+    # the thing that makes this correct, not just usually-fine.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: routa-platform
+  source:
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+    targetRevision: main
+    path: gitops/bootstrap/cluster-issuer
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # REQUIRED, not optional — this is scenario 2 from Argo CD's own docs
+      # (argo-cd.readthedocs.io/en/stable/user-guide/sync-options/, verified
+      # 2026-08-17): "The CRD manifest is part of the same sync" (scenario 1) auto-
+      # skips the dry run for it; but "In some cases the CRD is not part of the
+      # sync, but it could be created in another way, e.g. by a controller in the
+      # cluster" (scenario 2 — exactly this case, where cert-manager.yaml is a
+      # SEPARATE, sibling Application) — "Argo CD cannot find the CRD in the sync
+      # and will fail... `the server could not find the requested resource`" unless
+      # this option is set. Safe to leave on permanently: "The dry run will still
+      # be executed if the CRD is already present in the cluster" — it only skips
+      # dry-run in the genuinely-missing case, not on every sync thereafter, so this
+      # is not a standing suppression of validation once cert-manager is up.
+      #
+      # ServerSideApply is NOT set here, deliberately: that option (used on
+      # cert-manager.yaml) solves a different, unrelated problem — cert-manager's
+      # OWN large CRDs exceeding the 262144-byte client-side-apply annotation limit.
+      # These ClusterIssuer objects are tiny; there is no annotation-size problem to
+      # solve here, so adding ServerSideApply would be cargo-culting a fix for a
+      # failure mode that doesn't apply to this resource.
+      - SkipDryRunOnMissingResource=true
