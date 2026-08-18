@@ -30,7 +30,8 @@ All three on Let's Encrypt production certificates via cert-manager, not self-si
   through it — the GitOps loop closes through infrastructure this platform built
   itself, not an external registry.
 - **kube-prometheus-stack**, with persistent storage (not ephemeral `emptyDir`) on
-  the cluster's own default `local-path` StorageClass.
+  the cluster's own default `local-path` StorageClass. Production alerting design in
+  [`docs/alerting.md`](docs/alerting.md).
 - **Kueue** (bonus), for job queueing and quota management — a `ClusterQueue` with a
   tight CPU quota and a demo (`gitops/platform/kueue-demo/`) that proves real FIFO
   admission: two `Job`s together exceed the quota, so the second visibly waits on the
@@ -65,7 +66,7 @@ Argo CD (self-managing, app-of-apps)
 | `terraform/` | Terraform | Provisioning: 4 VMs, SSH key, IP outputs → Ansible inventory |
 | `ansible/` | Ansible | OS hardening; RKE2 install; k3s + Rancher + cert-manager on the mgmt node; kubeconfig retrieval |
 | `gitops/` | Argo CD | Everything inside the cluster |
-| `docs/` | — | `report.md` (the assignment deliverable), `decisions.md` (the full build log), `ai-usage.md` (AI-assisted engineering record) |
+| `docs/` | — | `report.md` (the assignment deliverable), `decisions.md` (the full build log), `ai-usage.md` (AI-assisted engineering record), `alerting.md` (production alerting design) |
 
 See `CLAUDE.md` for detailed conventions and the standing rules this repo is built
 under (version pinning, docs-before-syntax, Verda MCP usage).
