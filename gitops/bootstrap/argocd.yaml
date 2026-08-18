@@ -1,0 +1,67 @@
+# Argo CD managing its own installation — the self-managing bootstrap pattern.
+# Argo CD documents this explicitly: "Argo CD is able to manage itself since all
+# settings are represented by Kubernetes manifests"
+# (argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/, verified
+# 2026-08-17). See docs/decisions.md Section 20.4 for the full reasoning, including
+# why `prune` stays off here specifically.
+#
+# Chart pin verified 2026-08-17 against argoproj.github.io/argo-helm/index.yaml:
+# chart 10.4.0 -> appVersion v3.5.1 (latest stable Argo CD, released 2026-08-12).
+# kubeVersion constraint ">=1.25.0-0"; Argo CD 3.5 is tested against k8s v1.33-v1.36
+# per argo-cd.readthedocs.io/en/stable/operator-manual/installation/ — our RKE2 is
+# v1.36.3, inside range at the top end.
+#
+# ROUTA_REPO_URL: https://github.com/AmirMoshfeghi/routa-platform — appears here
+# (second source below), in bootstrap.yaml, and in every child Application that
+# pulls its own values.yaml from this repo (root-dev/staging/prod.yaml,
+# platform/{kube-prometheus-stack,harbor,demo-app}/application.yaml — 6 occurrences
+# in total). cert-manager.yaml needs no repo URL of its own (its chart comes from an
+# OCI registry, not this repo). Rebuild note: grep this repo for ROUTA_REPO_URL to
+# find every place the URL needs to change.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    # Sequencing note: no dependency FROM this app on cert-manager — Argo CD's own
+    # Deployments/pods don't need TLS to become healthy, only the Ingress's cert
+    # does, and that resolves asynchronously once cert-manager exists (Section 18
+    # transient-not-failure pattern). cert-manager (wave 0) and this app (wave 0)
+    # bring up in parallel; only cluster-issuer.yaml (wave 1) actually waits.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: routa-platform
+  # Multi-source: chart from the Helm repo, values.yaml from this git repo — same
+  # pattern gitops/platform/kube-prometheus-stack and harbor already use, so this
+  # repo has one mechanism for "external chart + our values", not two.
+  sources:
+    - repoURL: https://argoproj.github.io/argo-helm
+      chart: argo-cd
+      targetRevision: "10.4.0"
+      helm:
+        valueFiles:
+          - $values/gitops/bootstrap/argocd-values.yaml
+    - repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+      # prune: false, DELIBERATELY, and only for this Application. An app that owns
+      # its own Deployment/RBAC/ConfigMaps could in principle prune the very
+      # controller reconciling it if a bad diff ever appeared. Every other
+      # Application in this repo (cert-manager, the platform apps) keeps prune on;
+      # this is the one deliberate exception. Revisit once a clean first sync has
+      # been observed and the self-managing loop is trusted — see
+      # docs/decisions.md Section 20.4.
+    syncOptions:
+      - CreateNamespace=true
+      # REQUIRED, not optional, when Argo CD manages its own installation:
+      # "When managing Argo CD with Argo CD, you must enable the ServerSideApply=true
+      # sync option" (same docs page as above). Client-side apply's field-ownership
+      # model conflicts with the controller rewriting the resources it is running as.
+      - ServerSideApply=true

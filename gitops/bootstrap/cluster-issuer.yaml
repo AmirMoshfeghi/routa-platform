@@ -1,0 +1,61 @@
+# Let's Encrypt ClusterIssuers, HTTP-01 via the RKE2 cluster's Traefik ingress class.
+# Cluster-scoped, so — same reasoning as cert-manager.yaml — this lives in
+# gitops/bootstrap/, not gitops/platform/ (three environment copies would collide on
+# one cluster-scoped resource).
+#
+# Both staging AND production are defined here, always, rather than one ClusterIssuer
+# whose ACME server gets edited in place. That is deliberate, and traces directly to
+# the Rancher TLS incident (docs/decisions.md Section 18): cert-manager does not
+# re-issue while a valid cert already sits in the target Secret, so editing an
+# Issuer's server field in place is a change that LOOKS like it did something (the
+# object updates, Ready stays True) but is actually a silent no-op for issuance until
+# the Secret is deleted. Keeping both issuers as separate, always-present objects
+# means "switch to production" is an unambiguous action — change which issuer an
+# Ingress annotation names — rather than a mutation of shared state with a
+# non-obvious side effect.
+#
+# ACME directory URLs and the acme.solvers[].http01.ingress.ingressClassName field
+# shape verified 2026-08-17 against cert-manager.io/docs/configuration/acme/.
+#
+# email supplied by the operator 2026-08-17. Same address in both issuers below —
+# ROUTA_LETSENCRYPT_EMAIL marks both occurrences for a rebuild.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    # Must wait for cert-manager (wave 0) to be Synced AND Healthy — its CRD
+    # (clusterissuers.cert-manager.io) does not exist until then, so applying this
+    # in the same wave would fail the very first bootstrap. Waves progress only when
+    # all resources in the current wave are synced and healthy (confirmed against
+    # argo-cd.readthedocs.io/en/stable/user-guide/sync-waves/), and a child
+    # Application's health reflects whether ITS OWN deployed resources are healthy —
+    # so wave 1 genuinely waits for cert-manager to be running, not just requested.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: amh.moshfeghi@gmail.com  # ROUTA_LETSENCRYPT_EMAIL
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: amh.moshfeghi@gmail.com  # ROUTA_LETSENCRYPT_EMAIL
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

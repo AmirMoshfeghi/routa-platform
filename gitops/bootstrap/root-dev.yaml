@@ -2,8 +2,8 @@
 # patches gitops/platform (the base) via Kustomize. Promotion to staging/prod is
 # "change targetRevision / merge the overlay diff", not a separate pipeline.
 #
-# TODO: fill in repoURL once this repo has a remote (e.g. `verda-cloud/routa-platform`
-# or your own GitHub URL). Left unset on purpose rather than guessed.
+# ROUTA_REPO_URL — see gitops/bootstrap/argocd.yaml for the full rebuild note; this
+# is one of 6 repoURL occurrences tagged with this marker across the repo.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -12,7 +12,7 @@ metadata:
 spec:
   project: routa-platform
   source:
-    repoURL: REPLACE_ME
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
     targetRevision: main
     path: gitops/environments/dev
   destination:

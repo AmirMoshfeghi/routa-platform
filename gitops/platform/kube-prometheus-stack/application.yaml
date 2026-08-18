@@ -16,7 +16,7 @@ spec:
       helm:
         valueFiles:
           - $values/gitops/platform/kube-prometheus-stack/values.yaml
-    - repoURL: REPLACE_ME
+    - repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
       targetRevision: main
       ref: values
   destination:

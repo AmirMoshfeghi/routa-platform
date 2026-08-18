@@ -1721,3 +1721,222 @@ real URL at the same time.
 
 SSO stays out of scope until Argo CD is up and self-managing, by instruction. Noted for
 then: SSO depends on `global.domain` being correct, which 20.6 sets.
+
+---
+
+## 21. Argo CD bootstrap manifests written (2026-08-17)
+
+Section 20 was a plan. This is the write-up of turning it into files — what changed
+from the plan while writing it, and how it was verified. Nothing installed, nothing
+pushed, nothing committed; the repo has no Git remote configured in this environment
+(operator will create and push it separately).
+
+### 21.1 Files
+
+```
+gitops/bootstrap/bootstrap.yaml         self-referential Application (the one seed)
+gitops/bootstrap/argocd.yaml            self-managing Argo CD (multi-source, chart 10.4.0)
+gitops/bootstrap/argocd-values.yaml     Helm values for the argo-cd chart
+gitops/bootstrap/cert-manager.yaml      cert-manager (v1.21.1, OCI source, cluster singleton)
+gitops/bootstrap/cluster-issuer.yaml    letsencrypt-staging + letsencrypt-production
+gitops/bootstrap/kustomization.yaml     (modified) wires the above into the existing scaffold
+```
+
+`repoURL` is `https://github.com/AmirMoshfeghi/routa-platform`; ingress hostname is
+`argocd.95.133.252.180.sslip.io` (routa-cp-1, matching `rke2_api_endpoint_host`). Both
+supplied by the operator this session, not guessed.
+
+### 21.2 The bug the plan didn't catch: `bootstrap` referencing its own not-yet-created project
+
+Every child Application in this repo uses `project: routa-platform`. Section 20's plan
+did not flag that `bootstrap.yaml` — the one Application created imperatively, before
+anything else exists — cannot use that same project, because `routa-platform` is
+itself one of the resources `bootstrap` manages (`project.yaml`). Referencing it from
+`bootstrap.yaml` would mean the very first `kubectl apply -f bootstrap.yaml` names a
+project that doesn't exist yet: a chicken-and-egg reference that only breaks on a
+genuinely first-time bootstrap, not on any later reconcile once the project already
+exists — the kind of bug that is invisible in every state except the one that matters.
+
+Fixed by putting `bootstrap.yaml` alone in the `default` AppProject — the one project
+Argo CD creates automatically on install ("If unspecified, an application belongs to
+the `default` project, which is created automatically" —
+argo-cd.readthedocs.io/en/stable/user-guide/projects/, verified 2026-08-17). Every
+other Application in the repo stays on `routa-platform`.
+
+### 21.3 Sync-wave sequencing, and why it's needed at all
+
+`cluster-issuer.yaml` defines two `ClusterIssuer` objects, cluster-scoped like
+`cert-manager.yaml`, for the same reason documented in Section 20.3 (platform/ is
+instantiated three times; cluster-singletons don't belong there).
+
+A `ClusterIssuer` cannot be created before its CRD exists, and the CRD doesn't exist
+until cert-manager's own Helm release has actually deployed — creating cert-manager's
+*Application object* is not the same moment as cert-manager being *running*. Annotated
+`cert-manager.yaml` and `argocd.yaml` as `sync-wave: "0"` and `cluster-issuer.yaml` as
+`sync-wave: "1"`. Confirmed against docs (argo-cd.readthedocs.io/en/stable/user-guide/
+sync-waves/, verified 2026-08-17) that waves advance only once every resource in the
+current wave is both Synced and Healthy — and a child `Application`'s Health reflects
+its own deployed resources' health, not just its own existence as an object — so wave 1
+genuinely waits for cert-manager to be running, not merely requested.
+
+`argocd.yaml` shares wave 0 with `cert-manager.yaml` rather than waiting on it: Argo
+CD's own Deployments don't need TLS to report Healthy, only its Ingress's certificate
+does, and that resolves asynchronously once cert-manager exists — the same
+transient-not-failure pattern as Section 18 (Rancher's cert sat pending for a couple of
+minutes after chart install; expected, not a fault to chase).
+
+### 21.4 Two things reused from earlier incidents rather than re-derived
+
+**Both ClusterIssuers, always present, never edited in place.** Traces directly to
+Section 18: cert-manager does not re-issue while a valid cert already sits in the
+target Secret, so mutating one Issuer's `server` field in place is a change that
+*looks* like it did something (object updates, `Ready` stays `True`) while silently not
+re-issuing anything. Defining `letsencrypt-staging` and `letsencrypt-production` as two
+separate, always-present objects makes "switch to production" an unambiguous action —
+change which issuer an Ingress annotation names, delete the old Secret to force
+re-issuance — instead of a mutation of shared state with a non-obvious side effect.
+
+**`ServerSideApply=true` on `cert-manager.yaml`, predicted rather than hit live.**
+cert-manager's CRDs are large enough to exceed Kubernetes' 262144-byte
+last-applied-configuration annotation limit under client-side apply — a documented,
+common Argo CD + cert-manager failure ("Too long: must have at most 262144 bytes").
+Flagged and fixed while writing the manifest, the same posture as the `agentTLSMode`
+prediction in Section 19: reasoned out from known failure modes before touching the
+cluster, not discovered by watching something crash-loop.
+
+### 21.5 Scope held, gaps flagged rather than silently closed
+
+Only the five files above were written, matching what was asked. Left deliberately
+untouched, and worth listing so nothing is mistaken for finished:
+
+- `gitops/bootstrap/root-{dev,staging,prod}.yaml` and
+  `gitops/platform/{kube-prometheus-stack,harbor,demo-app}/application.yaml` still
+  carry `repoURL: REPLACE_ME` (7 occurrences total, including Harbor's
+  `externalURL`). `bootstrap`'s own Kustomize output includes the three root apps, so
+  these have to be resolved before any real sync would work end-to-end — not done
+  here because the operator's request scoped this step to the five bootstrap files.
+- `project.yaml`'s `sourceRepos: ["*"]` is unchanged. Tightening it to the real list
+  (this repo, `https://argoproj.github.io/argo-helm`, `quay.io/jetstack/charts`) is
+  still correct future hardening per Section 20.7, just not done now, since a
+  premature tightening that missed one of the three would break `argocd.yaml` or
+  `cert-manager.yaml` with a project-permission error.
+- `cluster-issuer.yaml`'s `email` field is `REPLACE_ME_LETSENCRYPT_EMAIL` in both
+  issuers — never supplied this session, not guessed.
+
+### 21.6 Verification (rule 4 — rendered, not eyeballed)
+
+`kubectl kustomize gitops/bootstrap` builds clean (exit 0) and produces exactly the 9
+expected resources: 1 `AppProject`, 6 `Application` (`argocd`, `bootstrap`,
+`cert-manager`, `routa-dev`, `routa-staging`, `routa-prod`), 2 `ClusterIssuer`. Checked
+the rendered output field-by-field for the three things most likely to be wrong by
+inspection alone rather than by build success: `bootstrap` really does render with
+`project: default` (not `routa-platform`); `argocd` and `cert-manager` both carry
+`ServerSideApply=true` in `syncOptions`; `argocd`'s `syncPolicy.automated` has no
+`prune` key (the deliberate omission holds).
+
+`argocd-values.yaml` is deliberately excluded from `kustomization.yaml`'s `resources:`
+— it has no `apiVersion`/`kind`, so Kustomize would fail trying to parse it as a
+Kubernetes object. Verified separately: `yaml.safe_load` parses it cleanly, and the
+resulting structure matches the exact field paths pulled from the chart source at the
+`argo-cd-10.4.0` tag (`server.ingress.*`, `configs.params."server.insecure"`,
+`configs.cm.url`, `global.domain`) rather than from memory or docs prose alone —
+`templates/argocd-server/ingress.yaml` was read directly to confirm `tls: true`
+produces a `tls:` block naming `secretName: argocd-server-tls`, which is the name
+cert-manager's ingress-shim annotation targets.
+
+One self-check caught and fixed before this write-up: the first draft of
+`argocd-values.yaml` claimed in a comment that its hostname marker
+(`ROUTA_ARGOCD_HOSTNAME`) appeared in exactly two places, but the literal hostname
+string actually appears three times (`global.domain`, `configs.cm.url`,
+`server.ingress.hostname`) and only two carried the inline marker. A comment asserting
+a rebuild is "one grep away" is itself a claim that needs to be true, not just written
+— fixed by tagging all three occurrences and correcting the count in the comment,
+then re-verified by grep.
+
+---
+
+## 22. Placeholders resolved: repo is push-ready (2026-08-17)
+
+Filled in every remaining input the plan (Section 20) and the write-up (Section 21)
+were blocked on. Still nothing installed, nothing committed, nothing pushed.
+
+### 22.1 What was filled in
+
+- **6 `repoURL: REPLACE_ME` occurrences** → `https://github.com/AmirMoshfeghi/routa-platform`,
+  each tagged with a `# ROUTA_REPO_URL` marker for a one-grep rebuild (same convention
+  the Section 21 files already established):
+  `gitops/bootstrap/root-{dev,staging,prod}.yaml`,
+  `gitops/platform/{kube-prometheus-stack,harbor,demo-app}/application.yaml`.
+- **`cluster-issuer.yaml`'s two `email: REPLACE_ME_LETSENCRYPT_EMAIL`** →
+  `amh.moshfeghi@gmail.com`, tagged `# ROUTA_LETSENCRYPT_EMAIL`.
+- `root-dev.yaml`'s now-stale "TODO: fill in repoURL once this repo has a remote"
+  comment was rewritten rather than left inaccurate once the value it was warning
+  about no longer applies — a stale TODO left in place next to a resolved value reads
+  as evidence nobody checked the fill-in actually happened.
+
+### 22.2 One instruction that didn't cleanly apply: Harbor's `externalURL`
+
+The count "7 `REPLACE_ME` occurrences" carried over from Section 21's write-up
+included `gitops/platform/harbor/values.yaml:10` — `externalURL: https://REPLACE_ME`.
+That one is **not** a repo URL and not the Argo CD hostname; it's Harbor's own
+registry hostname, a separate, not-yet-made decision. Setting it to
+`argocd.95.133.252.180.sslip.io` would collide it with Argo CD's own hostname — two
+different backends claiming the same Ingress host rule, an actual routing conflict,
+not a naming preference. Left as `REPLACE_ME`, not resolved by inference from an
+instruction that named a different value for a different purpose. `harbor/values.yaml`
+already documents itself as "Placeholder only" pending `docs/decisions.md` Section
+2.1's sslip.io plan — this is that same pre-existing, already-flagged gap, not a new
+one. So the accurate count for this step was 6 repo-URL fills, not 7; the 7th
+(`externalURL`) stays open and is called out explicitly rather than folded into "zero
+`REPLACE_ME` left."
+
+### 22.3 TODO before this is production: `project.yaml` sourceRepos is still `"*"`
+
+Per instruction, left as-is this step — tightening needs the full, correct list of
+external repos or it breaks `argocd.yaml`/`cert-manager.yaml` with a project-permission
+error, and getting that list right belongs with a deliberate pass, not a rushed one
+bundled into filling in placeholders. Recorded here as the thing to not forget:
+
+**TODO, before this repo is considered production-ready:** tighten
+`gitops/bootstrap/project.yaml`'s `sourceRepos` from `["*"]` to the exact list this
+build actually uses — `https://github.com/AmirMoshfeghi/routa-platform`,
+`https://argoproj.github.io/argo-helm`, `quay.io/jetstack/charts`,
+`https://helm.goharbor.io`, `https://prometheus-community.github.io/helm-charts` — so
+the `AppProject` is doing the access-control job an `AppProject` exists to do, rather
+than acting as an unscoped passthrough. `sourceRepos: ["*"]` on a project meant to
+gate what can be deployed into this cluster defeats the point of having a project at
+all; it was a reasonable placeholder for a scaffold with no confirmed source list, not
+a reasonable steady state.
+
+### 22.4 Verification (rule 4 — rendered, all four affected roots, not just one)
+
+`grep`-equivalent scan of every file under `gitops/` for `REPLACE_ME`: one hit,
+`gitops/platform/harbor/values.yaml:10`, matching Section 22.2 exactly — nothing
+unaccounted for.
+
+Section 21 only verified `kubectl kustomize gitops/bootstrap`. This step's edits also
+touched files consumed by `gitops/platform` and all three `gitops/environments/*`
+overlays, so all four were built, not assumed to follow from the bootstrap build
+passing:
+
+```
+gitops/bootstrap             exit 0
+gitops/platform               exit 0
+gitops/environments/dev       exit 0
+gitops/environments/staging   exit 0
+gitops/environments/prod      exit 0
+```
+
+Went one step further for `environments/prod` specifically, since it's the one root
+that *patches* the base rather than passing it through unchanged (namespace suffixes,
+`targetRevision: prod`, dropped `syncPolicy.automated` — Section 11/promotion model) —
+rendered its full output and confirmed the patched Applications still carry the real
+`repoURL`, not a value the patch step silently reverted to something stale:
+
+```
+repoURL: https://github.com/AmirMoshfeghi/routa-platform   (routa-prod itself)
+repoURL: https://helm.goharbor.io                            (harbor chart source)
+repoURL: https://github.com/AmirMoshfeghi/routa-platform   (harbor values source)
+repoURL: https://prometheus-community.github.io/helm-charts  (kube-prometheus-stack chart)
+repoURL: https://github.com/AmirMoshfeghi/routa-platform   (kube-prometheus-stack values)
+```

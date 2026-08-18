@@ -1,0 +1,60 @@
+# cert-manager on the RKE2 cluster. Genuinely absent before this — confirmed
+# empirically against the live cluster (no cert-manager namespace, no CRDs) — unlike
+# the ingress controller, which RKE2 already ships (see docs/decisions.md Section
+# 20.2). This is the one real missing prerequisite for a browser-trusted cert on the
+# Argo CD hostname.
+#
+# Version v1.21.1 verified 2026-08-17 against cert-manager.io/docs/releases —
+# supports Kubernetes 1.33 -> 1.36, covering our RKE2 v1.36.3. Same pin as the mgmt
+# node's cert-manager (ansible/inventory/group_vars/mgmt.yml) — two independent
+# clusters, deliberately kept on the same version rather than allowed to drift for no
+# reason, since nothing here requires them to differ.
+#
+# Cluster-singleton: lives in gitops/bootstrap/, not gitops/platform/, because
+# platform/ is instantiated three times (once per environment overlay) and
+# cert-manager's CRDs are cluster-scoped — three Applications would contend over one
+# set of CRDs. See docs/decisions.md Section 20.3.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: routa-platform
+  source:
+    # OCI chart reference: repoURL is the registry path WITHOUT the oci:// prefix,
+    # chart name is separate — confirmed against
+    # argo-cd.readthedocs.io/en/stable/user-guide/helm/#helm-repositories,
+    # "note: the oci:// syntax is not included." Combines to the same
+    # oci://quay.io/jetstack/charts/cert-manager the mgmt node's Helm CLI install
+    # uses directly.
+    repoURL: quay.io/jetstack/charts
+    chart: cert-manager
+    targetRevision: v1.21.1
+    helm:
+      parameters:
+        # Current flag name per cert-manager's install docs — supersedes the older
+        # installCRDs=true. Same as the mgmt-node install
+        # (ansible/roles/rancher/tasks/main.yml).
+        - name: crds.enabled
+          value: "true"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # NOT optional in practice: cert-manager's CRDs are large enough that
+      # client-side apply's last-applied-configuration annotation exceeds
+      # Kubernetes' 262144-byte annotation limit ("Too long: must have at most
+      # 262144 bytes" — a well-documented Argo CD + cert-manager failure mode).
+      # ServerSideApply avoids storing that annotation at all. Verified against
+      # multiple independent write-ups of the same failure during planning, not
+      # discovered by hitting it live — the same kind of advance flag as the
+      # agentTLSMode prediction in Section 19.
+      - ServerSideApply=true

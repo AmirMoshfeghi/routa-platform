@@ -1,0 +1,39 @@
+# The one imperative seed. Everything else in gitops/bootstrap/ — including this
+# file itself — is applied by Argo CD from here on; this Application's source path
+# IS the directory it lives in, so it is self-referential the same way argocd.yaml
+# is self-managing. See docs/decisions.md Section 20.5 for the full bootstrap
+# sequence this kicks off.
+#
+# project: default, NOT routa-platform — deliberately, and this is the one part of
+# this bootstrap that is easy to get wrong. `default` is the one AppProject Argo CD
+# creates automatically on install ("If unspecified, an application belongs to the
+# `default` project, which is created automatically" —
+# argo-cd.readthedocs.io/en/stable/user-guide/projects/, verified 2026-08-17). Every
+# OTHER Application in this repo uses `project: routa-platform`, but routa-platform
+# does not exist until THIS app's own sync creates it (project.yaml, one of the
+# resources this app manages). If this app also referenced routa-platform, the very
+# first `kubectl apply -f bootstrap.yaml` would create an Application pointing at a
+# project that does not exist yet — a chicken-and-egg reference that would only show
+# up on a genuinely first-time bootstrap, not on any later reconcile once the project
+# already exists. Using the always-present `default` project for this one
+# Application breaks that cycle.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AmirMoshfeghi/routa-platform  # ROUTA_REPO_URL
+    targetRevision: main
+    path: gitops/bootstrap
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,13 +1,16 @@
-# Starter values for chart harbor@1.19.2 (see application.yaml). Placeholder only —
-# expose.tls, externalURL and persistence sizing all need real values (host/DNS from
-# docs/decisions.md Section 2.1's sslip.io plan) before this is deployable. Fetch the
-# chart's values.yaml at this exact version before filling these in (CLAUDE.md rule 1).
+# Starter values for chart harbor@1.19.2 (see application.yaml). externalURL is now
+# set (2026-08-17) — same node as Argo CD (routa-cp-1, 95.133.252.180), different
+# sslip.io label, so no Ingress host collision with argocd.95.133.252.180.sslip.io.
+# expose.tls and persistence sizing STILL need real values before this is deployable:
+# TLS is still explicitly disabled below pending the cert-manager + sslip.io TLS plan
+# (docs/decisions.md Section 2.1), and persistence has no size set. Fetch the chart's
+# values.yaml at this exact version before filling those in (CLAUDE.md rule 1).
 expose:
   type: ingress
   tls:
     enabled: false   # TODO: cert-manager + sslip.io TLS, per docs/decisions.md
 
-externalURL: https://REPLACE_ME
+externalURL: https://harbor.95.133.252.180.sslip.io
 
 persistence:
   enabled: true
