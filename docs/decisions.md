@@ -2554,3 +2554,28 @@ seeing `Pending` here doesn't reflexively reopen Section 25's investigation.
 - Full `REPLACE_ME` sweep across `gitops/` — still zero.
 
 Nothing installed, committed, or pushed.
+
+---
+
+## 29. Prometheus Operator running but not reconciling — stale webhook certs (2026-08-18)
+
+After the kube-prometheus-stack CRDs applied in two batches (02:42, then 03:42 once
+the `ServerSideApply` fix from Section 24 landed), the `Prometheus` and
+`Alertmanager` CRs existed with `DESIRED 1` but blank `READY`/`RECONCILED`/
+`AVAILABLE` — no StatefulSets, no PVCs, `Events: <none>` on the CRs. The operator pod
+itself was `Running`.
+
+**The diagnostic lesson, stated plainly because it's the reusable part:** a `Running`
+operator pod is not evidence it is reconciling anything. `Events: <none>` on the CR
+is what actually distinguished "operator hasn't attempted this yet" from "operator
+tried and failed" — a failed reconcile would have left an error Event; none existed,
+so nothing had been attempted at all.
+
+**Root cause:** operator logs showed `tls: bad certificate` handshake errors at
+exactly `03:42:13` — matching the second CRD batch precisely — pointing at stale
+admission-webhook certs left over from before the CRDs re-applied.
+
+**Fix:** restarted the operator Deployment. Both StatefulSets were created
+immediately after, and the PVCs from Section 28 bound successfully.
+
+Nothing installed, committed, or pushed as part of logging this.
