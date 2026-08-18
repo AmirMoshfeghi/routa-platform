@@ -1,4 +1,39 @@
 # Chart version verified 2026-08-17 via https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+#
+# ServerSideApply=true (below) added 2026-08-17 after a real sync failure — same
+# root cause and same fix as cert-manager.yaml (docs/decisions.md Section 21.4), now
+# hit here too and recorded in Section 24. The Prometheus Operator CRDs this chart
+# installs (prometheuses, alertmanagers, thanosrulers, scrapeconfigs,
+# alertmanagerconfigs, prometheusagents) are large enough that client-side apply's
+# last-applied-configuration annotation exceeds Kubernetes' 262144-byte limit, so the
+# CRDs' own apply hard-fails — and because they never land, the chart's Prometheus/
+# Alertmanager custom resources then fail separately with "ensure CRDs are installed
+# first". Both symptoms share one cause and one fix.
+#
+# Checked (2026-08-17) whether this chart needs anything beyond ServerSideApply=true
+# — a Replace=true pairing, or a chart-specific values.yaml workaround. It doesn't:
+# ServerSideApply=true alone has been the documented fix since Argo CD >2.5
+# (we're on 3.5.1 — Section 20.1), confirmed against
+# blog.ediri.io/kube-prometheus-stack-and-argocd-25-server-side-apply-to-the-rescue,
+# which states the same thing this repo already concluded for cert-manager:
+# Replace=true was only ever the workaround for pre-2.5 Argo CD, not something to
+# pair with ServerSideApply now. The chart's own README documents CRDs as
+# Helm's standard "not auto-updated on upgrade" behavior but gives no ArgoCD-specific
+# guidance, and gives no separate-CRD-management recommendation for this chart the
+# way cert-manager's ecosystem sometimes suggests — so there was nothing chart-
+# specific to defer to.
+#
+# Considered and rejected: managing this chart's CRDs as a separate Application
+# (crds.enabled=false here + a dedicated CRD-only app, the same shape used for
+# cert-manager.yaml / cluster-issuer-app.yaml). Not needed — unlike the ClusterIssuer
+# case (Section 23), the CRDs and the CRs that depend on them are both part of THIS
+# SAME chart/Application, which Argo's own docs call the case that's already handled
+# automatically ("the CRD manifest is part of the same sync" — sync-options docs,
+# Section 23.2) once the CRD can actually apply at all. ServerSideApply=true fixes
+# exactly that — the CRD's own apply — so there is no cross-Application ordering
+# problem here to solve, and splitting it out would add structure this chart doesn't
+# need. (The pre-existing three-environments CRD-contention question flagged in
+# Section 20.3 is a separate, still-open concern — this fix does not address it.)
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -28,3 +63,4 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true

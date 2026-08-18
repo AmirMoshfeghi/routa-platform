@@ -2054,3 +2054,56 @@ is known to be needed nearby.
   survivor from Section 22 was resolved separately before this step).
 
 Nothing installed, committed, or pushed as part of this fix.
+
+---
+
+## 24. kube-prometheus-stack hit the same CRD-size failure as cert-manager (2026-08-17)
+
+Reported failure, same shape as Section 21.4's advance flag on cert-manager, now
+actually observed: the Prometheus Operator CRDs this chart installs (`prometheuses`,
+`alertmanagers`, `thanosrulers`, `scrapeconfigs`, `alertmanagerconfigs`,
+`prometheusagents`) exceed the 262144-byte last-applied-configuration annotation
+limit under client-side apply. The CRDs' own apply hard-fails, and because they never
+land, the chart's `Prometheus`/`Alertmanager` custom resources then fail separately
+with "ensure CRDs are installed first" — one root cause, two visible symptoms.
+
+**Fix:** `ServerSideApply=true` added to `gitops/platform/kube-prometheus-stack/
+application.yaml`'s `syncOptions` — identical fix, identical reasoning to
+`cert-manager.yaml` (Section 21.4).
+
+**Checked whether this chart needs anything beyond that**, per instruction, rather
+than assuming the cert-manager fix transfers unexamined:
+
+- **Not `Replace=true`.** Confirmed against
+  blog.ediri.io/kube-prometheus-stack-and-argocd-25-server-side-apply-to-the-rescue:
+  `ServerSideApply=true` alone has been the fix since Argo CD >2.5 (we're on 3.5.1 —
+  Section 20.1); `Replace=true` was only ever the pre-2.5 workaround, not a pairing
+  for current versions.
+- **No chart-specific values.yaml workaround.** The chart's own README documents CRDs
+  as following Helm's standard "not auto-installed/updated on upgrade" behavior, with
+  no ArgoCD-specific guidance and no separate-CRD-management recommendation the way
+  some charts carry.
+- **No cross-Application split needed**, unlike Section 23's ClusterIssuer fix. That
+  case needed structural separation because the CRD (cert-manager's) and the CR
+  (ClusterIssuer) belonged to two DIFFERENT Applications with two different sync
+  cycles. Here, the CRDs and the CRs that depend on them are both part of the SAME
+  chart and the SAME Application — the case Argo's own sync-options docs already
+  describe as handled automatically once the CRD can actually apply at all
+  ("the CRD manifest is part of the same sync" — quoted fully in Section 23.2).
+  `ServerSideApply=true` fixes exactly that blocking step, so there was no ordering
+  problem left to solve by splitting anything out.
+
+**Not addressed, and not the same problem:** Section 20.3 separately flagged that
+`kube-prometheus-stack` sits in `platform/`, which is instantiated three times (once
+per environment), so three Applications will eventually contend over one set of
+cluster-scoped CRDs. That is still open. This fix makes the CRDs installable at all;
+it does not resolve three environments installing them redundantly.
+
+**Verification (rendered):** `kubectl kustomize gitops/platform` — exit 0. Rendered
+all three `gitops/environments/{dev,staging,prod}` overlays and confirmed
+`ServerSideApply=true` survives the Kustomize patch layer in each — worth checking
+explicitly since prod/staging patch this same Application's `spec.destination.namespace`
+and `targetRevision` via JSON patches, and a patch touching nearby paths is exactly
+the kind of change that could silently clobber an unrelated sibling field if the
+patch path were slightly wrong. It didn't. Full `REPLACE_ME` sweep across `gitops/`
+still clean. Nothing installed, committed, or pushed.
