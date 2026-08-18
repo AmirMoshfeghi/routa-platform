@@ -4,6 +4,16 @@
 # UI (or `argocd app sync routa-prod`) after reviewing the diff", not automatic on
 # merge. dev/staging trade that safety for speed; prod does not.
 #
+# This policy turned out to do double duty, noted 2026-08-18 (docs/decisions.md
+# Section 37): prod's child Applications (harbor, kube-prometheus-stack, demo-app)
+# share metadata.name with dev's and staging's (no namePrefix — Section 37.1, still
+# unfixed), so an auto-syncing routa-prod would periodically win that race and
+# overwrite/prune dev's live workloads, the same failure root-staging.yaml just got
+# patched to stop (Section 37.4's orphaned-namespace cleanup). Prod's manual-sync
+# posture already prevented its side of that race by accident, for an unrelated
+# reason (deliberate promotion gating) — recorded here now that the connection is
+# understood, not because anything about this file changed.
+#
 # sync-wave: "2" — see root-dev.yaml for why (Section 27). This governs when
 # BOOTSTRAP creates the routa-prod Application object, which is independent of
 # routa-prod's own manual-sync-only policy above (that policy only affects whether

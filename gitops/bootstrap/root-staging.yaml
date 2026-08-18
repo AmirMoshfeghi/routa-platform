@@ -4,6 +4,38 @@
 #
 # sync-wave: "2" — see root-dev.yaml for why (Section 27). Same reasoning applies
 # identically here: this Application must not be created before storage exists.
+#
+# syncPolicy.automated REMOVED 2026-08-18 (docs/decisions.md Section 37) — was
+# `prune: true` + `selfHeal: true`, matching routa-dev. Two reasons, not one:
+#
+# 1. dev/staging/prod's child Applications (harbor, kube-prometheus-stack, demo-app —
+#    gitops/platform/kustomization.yaml) share the same metadata.name across all
+#    three environments (no namePrefix — Section 37.1, still unfixed). With BOTH
+#    routa-dev and routa-staging auto-syncing, whichever last reconciled would
+#    silently overwrite the other's destination-namespace/targetRevision on those
+#    shared objects, and Argo's own prune on the "losing" side would delete the
+#    other environment's live workloads out from under it — this is exactly what
+#    produced the orphaned monitoring-staging/harbor-staging namespaces cleaned up
+#    in Section 37.4. Manual-only sync on staging removes staging's side of that
+#    race entirely; only routa-dev auto-syncs now, so there is no longer a second
+#    automated writer to race against.
+# 2. Matches the promotion model routa-prod.yaml already established (see its own
+#    comment): promotion should be a deliberate "someone runs `argocd app sync`
+#    after reviewing the diff" action, not automatic on merge. Previously only prod
+#    had that discipline; staging auto-synced like dev despite being a promotion
+#    target. Extending manual-sync to staging makes dev the only environment that's
+#    "always current" and staging/prod both deliberately gated, consistent with the
+#    "environments are namespace-suffixed overlays... that ref bump *is* the
+#    promotion step" framing in this repo's own layout description (top of this
+#    file) — a promotion step you have to actually invoke, not one that races
+#    another environment's auto-sync to take effect.
+#
+# NOT a fix for Section 37.1's root cause (the shared Application names) — the
+# collision still exists structurally; this only removes staging's ability to
+# automatically re-trigger it. A manual `argocd app sync routa-staging` can still
+# overwrite dev's live state on the shared objects, same as it always could — the
+# operator doing that deliberately, with the diff visible first, is the intended
+# guardrail now, not automation timing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,8 +53,5 @@ spec:
     server: https://kubernetes.default.svc
     namespace: argocd
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true

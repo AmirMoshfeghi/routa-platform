@@ -2951,3 +2951,365 @@ No live Application would be rejected by this tightening — confirmed by the ex
 cross-reference above, not by inspection.
 
 Nothing pushed as part of this change.
+
+---
+
+## 36. Kueue (bonus task) added (2026-08-18)
+
+The last unstarted item on the optional list (Section 1.1/1.2) — the brief calls it
+out specifically because Verda documents Kueue for their own Instant Clusters, so
+this is a real Verda-operated capability, not generic filler. Built, not yet pushed.
+
+### 36.1 Version, verified two ways — and a real doc-vs-tag mismatch caught by that
+
+`kueue.sigs.k8s.io/docs/getting-started/installation/` names **v0.19.1** as current
+stable and gives the Helm OCI install command. Cross-checked against
+`github.com/kubernetes-sigs/kueue/releases`: v0.19.1 (2026-08-12) is the latest
+non-prerelease tag, ahead of v0.19.0 and v0.18.5. Then cross-checked a third way —
+pulled `charts/kueue/Chart.yaml` at the actual `v0.19.1` git tag: `version: 0.19.1`,
+`appVersion: "v0.19.1"`, chart and app release move together for this project.
+
+**The doc-vs-tag mismatch, exactly the kind CLAUDE.md rule 1 exists to catch:** the
+installation page's own prose/rendered examples show `kueue.x-k8s.io/v1beta1` for
+ResourceFlavor/ClusterQueue/LocalQueue in places. Rather than trust that, fetched the
+actual example manifest shipped in the pinned tag directly —
+`site/static/examples/admin/single-clusterqueue-setup.yaml` at `v0.19.1` — via `curl`
+(not the summarizing fetch tool, deliberately, after the fetch tool's own summary of
+a different page had already misreported the chart's install command in one attempt
+during this same investigation). That file uses `kueue.x-k8s.io/v1beta2`,
+consistently with what Verda's own Instant Clusters Kueue doc
+(`docs.verda.com/clusters/instant-clusters/kubernetes/queueing/`, already listed in
+Section 5) references. **v1beta2 used throughout** — the doc page's prose was stale
+relative to its own pinned tag's files, not the other way around.
+
+### 36.2 Architecture: cluster singleton, same shape as cert-manager/ClusterIssuer
+
+Kueue's CRDs (`ClusterQueue`, `ResourceFlavor`, `Workload`, `LocalQueue`, etc.) are
+cluster-scoped and there is exactly one `kueue-system` controller for the whole
+cluster — the same reasoning already established for cert-manager and the
+local-path-provisioner (Section 20.3): three environment-overlay Applications would
+collide over one set of objects. So the controller install and the shared
+ResourceFlavor/ClusterQueue live in `gitops/bootstrap/`, not `gitops/platform/`.
+
+Split into **two** Applications, replaying the exact structural fix from Section 23
+(cert-manager/ClusterIssuer) rather than rediscovering it by hitting the same
+failure live:
+
+- `gitops/bootstrap/kueue.yaml` (wave "0") — the Helm OCI install
+  (`registry.k8s.io/kueue/charts/kueue` @ `0.19.1`, no `oci://` prefix in `repoURL`,
+  same convention as `cert-manager.yaml`'s `quay.io/jetstack/charts`). No helm
+  parameters — pulled `values.yaml` at the tag and confirmed the relevant defaults
+  already fit: `enableCertManager: false` (Kueue manages its own webhook cert
+  internally — no dependency on this cluster's cert-manager install, unlike
+  `cluster-issuer`), `integrations.frameworks` already includes `"batch/job"`, the
+  only workload type the demo needs.
+- `gitops/bootstrap/kueue-config-app.yaml` (wave "1") + `gitops/bootstrap/kueue-config/`
+  — the shared `ResourceFlavor`/`ClusterQueue`, as their own Application with
+  `SkipDryRunOnMissingResource=true`, for the identical reason `cluster-issuer-app.yaml`
+  needs it: these objects depend on a CRD a *sibling* Application installs, and Argo's
+  comparison pass for bootstrap's own sync would trip over "no matches for kind
+  ClusterQueue" before wave-gating ever got a chance to help, if these were bundled
+  into bootstrap's own resource list instead.
+
+`ServerSideApply=true` added to `kueue.yaml` proactively, not after hitting the
+failure live this time (unlike cert-manager's first encounter, Section 21.4/24, or
+kube-prometheus-stack's, Section 24) — pulled the chart's actual CRD templates at the
+`v0.19.1` tag and measured them directly: `kueue.x-k8s.io_workloads.yaml` is 1.3 MB,
+`kueue.x-k8s.io_clusterqueues.yaml` is 88 KB, both well over the 262144-byte
+last-applied-configuration limit client-side apply would try to store. Applying the
+already-learned pattern ahead of the failure, rather than waiting to rediscover it, is
+the point of writing these decisions down in the first place.
+
+### 36.3 The demo: sized to actually prove queueing, not just installation
+
+`gitops/platform/kueue-demo/` (namespaced — `kueue-demo` — so it follows the
+`gitops/platform/` convention, instantiated via `platform/kustomization.yaml` like
+`demo-app/`) holds one `LocalQueue` bound to `cluster-queue`, plus two identical
+`Job`s (`kueue-demo-job-a`, `kueue-demo-job-b`) each requesting 2 CPU total
+(`parallelism: 2` x `1` CPU/pod — image and command copied verbatim from
+`kueue.sigs.k8s.io/docs/tasks/run/jobs/`'s own sample,
+`registry.k8s.io/e2e-test-images/agnhost:2.53`, `sleep 60`).
+
+**Quota chosen deliberately small**: `cluster-queue`'s `cpu` `nominalQuota` is `"2"`,
+against ~48 allocatable vCPU across the three `CPU.16V.64G` nodes (Section on the
+`CPU.16V.64G` fallback) — a quota sized to "whatever fits" would let both demo Jobs
+admit immediately and demonstrate nothing. At `cpu: "2"`, `job-a` fits exactly and
+admits immediately; `job-a` + `job-b` together demand 4 CPU, so `job-b` stays
+suspended (`QuotaReserved=False`) until `job-a` completes (~60s) and releases its
+quota — real, observable FIFO admission, checkable via `kubectl get workloads -n
+kueue-demo`. `memory` quota (`2Gi`) set well above what the demo needs (2 jobs x
+512Mi = 1Gi) so CPU is unambiguously the constraint being demonstrated, not an
+interaction between two limits.
+
+**Single shared instance, not one per environment** — considered replicating this
+the way `demo-app`/`harbor`/`kube-prometheus-stack` are (per-environment destination-
+namespace patches in `environments/{staging,prod}/kustomization.yaml`) and rejected
+it: `cluster-queue` is a genuine cluster singleton (36.2), so three `LocalQueue`s
+would just be three names bound to the one shared quota, not three independent
+demonstrations. One instance, in its own `kueue-demo` namespace, is enough to prove
+the mechanism.
+
+`ttlSecondsAfterFinished: 300` on both Jobs so completed runs clean themselves up
+rather than sitting `Completed` forever, and so a future edit to these Jobs' specs
+doesn't hit "field is immutable" against a `Completed` Job Argo still owns.
+
+### 36.4 A pre-existing condition this inherits, not one it creates
+
+Live-cluster check (`kubectl get applications -n argocd`) surfaced something worth
+recording plainly rather than quietly working around: there is exactly **one** Argo
+`Application` object each named `harbor`, `kube-prometheus-stack`, `demo-app` — not
+one per environment — even though `routa-staging`/`routa-prod` are both live roots
+and `harbor-staging`/`monitoring-staging`/`demo-staging` namespaces already exist
+(from a past `routa-staging` sync). Neither `environments/staging/kustomization.yaml`
+nor `environments/prod/kustomization.yaml` applies a `namePrefix`/`nameSuffix` — only
+`destination.namespace`/`targetRevision` patches — so `platform/kustomization.yaml`'s
+child Applications are named identically across all three environments' Kustomize
+builds. `routa-dev`, `routa-staging`, `routa-prod` are therefore all reconciling the
+**same** Argo `Application` objects (`argocd` namespace, name is the only key) toward
+different `destination.namespace`/`targetRevision` values — a real fight, not a
+theoretical one, and almost certainly why `kube-prometheus-stack`, `routa-prod`, and
+`routa-staging` were already showing `OutOfSync` before this change.
+
+**Not fixed as part of this task** — diagnosing/redesigning the environment-promotion
+model is materially larger than "add the Kueue bonus task" and wasn't asked for.
+`kueue-demo` was designed as a single shared instance from the start (36.3), so it
+doesn't add a NEW instance of this problem — it experiences exactly the same
+contention `harbor`/`kube-prometheus-stack`/`demo-app` already do, no more and no
+less. Flagged here so it's not mistaken for something this change introduced, and as
+a candidate for the report's "what would be improved with more time" section — the
+fix is most likely a `namePrefix: dev-`/`staging-`/`prod-` (or similar) in each
+environment overlay, which Argo CD's own multi-environment app-of-apps examples use
+for exactly this reason.
+
+### 36.5 Verification
+
+- `kubectl kustomize` (kustomize v5.8.1, bundled with kubectl v1.36.3) against every
+  root in the repo — `bootstrap`, `bootstrap/local-path-provisioner`,
+  `bootstrap/kueue-config` (new), `platform`, `platform/kueue-demo` (new), all three
+  `environments/*` — all still exit 0. (`bootstrap/cluster-issuer/` has no
+  `kustomization.yaml` by design, per its own file's comment — it's synced as a
+  plain-manifest directory, not a Kustomize root; unchanged by this work.)
+- `helm template kueue oci://registry.k8s.io/kueue/charts/kueue --version 0.19.1
+  --namespace kueue-system` against the real pinned chart — rendered cleanly, 11
+  CRDs, the controller `Deployment`, both webhook configurations, all present as
+  expected.
+- Hand-written `ResourceFlavor`/`ClusterQueue`/`LocalQueue`/`Job` manifests checked
+  field-for-field against the actual example manifests fetched from the `v0.19.1` git
+  tag (36.1) — same shape, only names/quota values/labels differ.
+- `yaml.safe_load_all` parse of every new file — all parse, `kind`s are what's
+  expected.
+- Full `REPLACE_ME` sweep across `gitops/` — still zero.
+- `project.yaml`'s `sourceRepos` re-grepped (not just appended to) per Section 35's
+  own instruction to re-grep rather than assume the list is stale; only addition is
+  `registry.k8s.io/kueue/charts`.
+
+**Not done**: no live `kubectl apply`/Argo sync of any of this — nothing pushed to
+`main` yet, so nothing has reached the cluster. Server-side dry-run validation of the
+custom resources themselves (`ResourceFlavor`/`ClusterQueue`/`LocalQueue`) was
+considered and skipped deliberately: it would require the Kueue CRDs actually
+registered on the live API server first, i.e. a real (if reversible) cluster mutation
+just to validate YAML shape — the field-for-field comparison against the verified
+upstream example (36.1, 36.5) was judged sufficient, consistent with how this repo
+has validated Application manifests elsewhere (`helm template` against the pinned
+chart, not a live dry-run) when a live CRD dependency would otherwise be required.
+
+---
+
+## 37. Environment Application-name collision: root cause confirmed, orphaned resources cleaned up, root cause NOT fixed (2026-08-18)
+
+Investigated in response to a direct question about the "improve with more time" item
+flagged while building Kueue (Section 36.4): is the dev/staging/prod overlay
+situation cosmetic, or a real bug? It's real. This entry records what was found, what
+was cleaned up (by Argo CD itself, not by hand — see 37.3), and what is deliberately
+left open.
+
+### 37.1 Root cause, confirmed directly against the live cluster
+
+`gitops/environments/{dev,staging,prod}/kustomization.yaml` all list `resources:
+[../../platform]` and only patch `spec.destination.namespace` /
+`spec.source(s).targetRevision` on the child Applications — none applies a
+`namePrefix`/`nameSuffix`. `platform/kustomization.yaml`'s child Applications
+(`harbor`, `kube-prometheus-stack`, `demo-app`) therefore render with the **same
+`metadata.name`** regardless of which environment's Kustomize build produced them,
+and Argo `Application` objects are keyed by name within the `argocd` namespace — so
+`routa-dev`, `routa-staging`, and `routa-prod` are all reconciling the same three
+Application objects toward three different desired states.
+
+Confirmed, not inferred: Argo CD's own `SharedResourceWarning` status condition on
+both `routa-staging` and `routa-prod` names exactly these three —
+`"Application/harbor is part of applications argocd/routa-staging and routa-dev"`,
+same wording for `kube-prometheus-stack` and `demo-app`. This is Argo's own built-in
+collision detector, not a conclusion reached by inspection.
+
+**`kueue-demo` (Section 36) does not join this collision** — it was deliberately
+built as a single shared instance across environments from the start (36.3), so it
+never had a competing per-environment name to begin with.
+
+### 37.2 Correction: this is what was actually behind `kube-prometheus-stack`'s bad health
+
+Originally reported to the operator as "unrelated" — wrong, corrected here.
+`kube-prometheus-stack`'s own `status.resources[]` had ~90 entries in the
+`monitoring-staging` namespace (`requiresPruning: true`) left over from a past round
+where `routa-staging` had momentarily won the fight over that Application object.
+Among them, a `DaemonSet` (`prometheus-node-exporter`) whose pods were permanently
+stuck `Pending` (`FailedScheduling`: "didn't have free ports for the requested pod
+ports" — hostPort 9100 conflicting with the healthy copy already bound on the same
+three nodes in the real `monitoring` namespace). Argo aggregates an Application's
+health across everything it still tracks, healthy or not — so this one stuck
+DaemonSet in an orphaned namespace was dragging `kube-prometheus-stack`'s reported
+health to `Progressing` even though the live, correctly-routed copy in `monitoring`
+was fully healthy the entire time. Same bug as 37.1, not a second one.
+
+### 37.3 A live, cluster-wide side effect checked *before* anything was deleted
+
+Before touching anything, checked whether the orphaned `monitoring-staging` copy had
+any cluster-scoped footprint that deleting the namespace wouldn't clean up. It did:
+`ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration`
+`kube-prometheus-stack-admission` are cluster-scoped and name-fixed by the chart —
+only one instance can exist — and at the time of checking, `clientConfig.service`
+on all three of its rules (`prometheusrulevalidate`, `alertmanagerconfigsvalidate`,
+`prometheusrulemutate`) pointed at `kube-prometheus-stack-operator.monitoring-staging`,
+not the live `monitoring` copy. Read `.webhooks[].failurePolicy` on all three rules
+directly (`kubectl get validatingwebhookconfiguration/mutatingwebhookconfiguration
+... -o json`) before deciding anything: **`Ignore`** on every rule. That's what made
+deleting the orphaned namespace safe from this angle — an unreachable webhook backend
+under `failurePolicy: Ignore` means Kubernetes skips admission validation/mutation
+for `PrometheusRule`/`AlertmanagerConfig` writes cluster-wide rather than rejecting
+them; no hard failure for the live `monitoring` copy while the stale `clientConfig`
+field waits for Argo's own `selfHeal` to correct it (which is `kube-prometheus-stack`
+Application's own declared desired state already — the field was `OutOfSync`, not an
+orphan Argo had abandoned).
+
+Also checked: the three `ClusterRole`/`ClusterRoleBinding`/CRD sets tied to this
+release are cluster-scoped, chart-generated regardless of destination namespace, and
+already part of the live Application's own desired manifest (`requiresPruning`
+unset, `status: OutOfSync` instead) — deleting the orphaned namespace does not
+delete these; they stay, correctly, as the live Application's own resources.
+
+### 37.4 What actually got cleaned up — and by whom
+
+Plan going in was to run `kubectl delete namespace monitoring-staging` by hand plus
+delete `harbor-staging`'s three PVCs (`data-harbor-redis-0` 1Gi,
+`data-harbor-trivy-0` 5Gi, `database-data-harbor-database-0` 1Gi — confirmed
+untracked by any Argo Application, zero `argocd.argoproj.io/instance` label, unlike
+`monitoring-staging`'s resources which the live `kube-prometheus-stack` Application
+still tracked with `requiresPruning: true`). Presented the exact scope to the
+operator for confirmation first, per instruction, before running anything
+destructive.
+
+**Neither delete was executed by hand.** By the time confirmation came back and the
+commands were about to run, both `monitoring-staging` and `harbor-staging` had
+already been removed — confirmed via `kubectl get ns` (`NotFound` on both) and via
+the PV list (no `Released`/`Failed` PVs left over from either namespace; all five
+backing PVs — 2Gi + 10Gi from `monitoring-staging`, 1Gi + 5Gi + 1Gi from
+`harbor-staging` — are gone cleanly, consistent with their `reclaimPolicy: Delete`).
+The most likely explanation: Argo CD's own `prune: true` + `selfHeal: true`
+automated sync on `kube-prometheus-stack` (and whatever last reconciled `harbor`)
+caught up on its normal reconciliation cadence in the time between the plan being
+presented and confirmed. `kube-prometheus-stack` now reads `Synced` / `Healthy`, and
+its admission webhook's `clientConfig.service.namespace` now correctly reads
+`monitoring` — the stale field from 37.3 self-healed as predicted, without any
+manual edit.
+
+**What this means for the numbers already stated to the operator**: they still
+stand as an accurate description of what was cleaned up — Argo removed the same
+~90 `monitoring-staging` resources (including the 2Gi + 10Gi PVCs and their backing
+data) and the 3 orphaned `harbor-staging` PVCs (~7Gi) — just via its own reconcile
+loop rather than a manual `kubectl delete`. `demo-staging` namespace was left
+untouched: confirmed genuinely empty (no PVCs, no workloads), so there was nothing
+there costing anything to clean up.
+
+### 37.5 What's still actually broken — cleanup is not a fix
+
+**The root cause (37.1) is unresolved.** `routa-staging` and `routa-prod` still read
+`OutOfSync` right now, with the same `SharedResourceWarning` conditions still
+present — dev happens to be the current "winner" for `harbor`/
+`kube-prometheus-stack`/`demo-app` after this reconcile round, but nothing stops a
+future automated sync of `routa-staging` or `routa-prod` from winning the same fight
+back and recreating an orphaned `-staging`/`-prod` copy of these components again.
+Tonight's cleanup fixed the symptom (resource/storage cost, degraded health
+reporting) for right now; it did not fix the cause, and the exact same drift can
+reappear on its own without anyone changing anything.
+
+**Separately, and independently of the naming collision**: `git branch -a` /
+`git ls-remote --heads origin` show this repository has only a `main` branch — no
+`staging`, no `prod`. `routa-staging`'s and `routa-prod`'s multi-source child
+Applications (`harbor`, `kube-prometheus-stack`) patch their `$values`
+`targetRevision` to `staging`/`prod` (Section on the environments overlay), and those
+refs do not exist. So even with the name collision fixed, the "promotion is a git-ref
+bump" model this repo's docs describe (top of this file, "Repository layout") is not
+actually wired end to end yet — there is nothing for `staging`/`prod` to diverge to
+until those branches (or an equivalent ref) exist.
+
+**Correct long-term fix, scoped for later, not done tonight**: a `namePrefix`
+(`dev-`/`staging-`/`prod-`, or similar) in each `gitops/environments/*/kustomization.yaml`,
+which is the same shape Argo CD's own multi-environment app-of-apps documentation
+uses for exactly this reason, plus actually creating `staging`/`prod` branches (or
+switching the promotion model to something that doesn't depend on them existing).
+Neither attempted here — this entry documents the finding and the immediate
+cleanup only, per instruction to scope the structural fix separately.
+
+### 37.6 Verification
+
+- `kubectl get application <name> -n argocd -o json`, `status.resources[]` and
+  `status.conditions[]` read directly for all six Applications involved
+  (`routa-dev/staging/prod`, `harbor`, `kube-prometheus-stack`, `demo-app`) — not
+  inferred from `kubectl get applications` summary output.
+- `kubectl get validatingwebhookconfiguration/mutatingwebhookconfiguration
+  kube-prometheus-stack-admission -o json`, `.webhooks[].failurePolicy` and
+  `.webhooks[].clientConfig.service` read directly, before and after.
+- `kubectl get ns`, `kubectl get pv` re-checked immediately before writing this entry
+  — `monitoring-staging`/`harbor-staging` both `NotFound`, no `Released`/`Failed` PVs
+  outstanding from either.
+- `git branch -a` and `git ls-remote --heads origin` — only `main` exists.
+- Nothing in this repository's tracked files changed as part of this investigation —
+  no `kubectl apply`, no `kubectl delete` run by hand, no git changes beyond this
+  entry. The cleanup that happened, happened via Argo CD's own existing
+  `syncPolicy.automated` on `kube-prometheus-stack`/`harbor`, not via any command run
+  in this session.
+
+### 37.7 `routa-staging`'s auto-sync removed — closes the recurrence risk 37.5 flagged, not the root cause
+
+37.5 left the root cause (37.1, no `namePrefix`) explicitly unfixed and warned the
+same orphaning could recur on its own, without anyone changing anything, the next
+time `routa-staging` or `routa-prod`'s automated sync won a race against `routa-dev`
+over the shared `harbor`/`kube-prometheus-stack`/`demo-app` Application objects.
+
+**`root-staging.yaml`'s `syncPolicy.automated` (`prune: true`, `selfHeal: true`)
+removed.** `routa-prod.yaml` needed no change — checked first, and it already has no
+`automated` block; it's been manual-sync-only since it was written, for an unrelated
+reason (deliberate prod-promotion gating, its own file's original comment). That
+turns out to have been silently doing double duty: prod was never able to win the
+naming race in the first place, purely as a side effect of a policy chosen for a
+different reason. Recorded in both files' own comments now that the connection is
+understood, not because `root-prod.yaml`'s behavior changed.
+
+**What this does and does not fix, stated plainly:**
+- **Removes the recurrence mechanism.** With `routa-staging` no longer auto-syncing,
+  there is exactly one automated writer (`routa-dev`) contesting the shared
+  Application objects — a race needs two periodic actors, and now there is only one.
+  The specific failure from 37.2–37.4 (an environment's auto-sync winning a round,
+  leaving the loser's workloads orphaned when the other side wins the next round)
+  can no longer happen on its own.
+- **Does not remove the collision itself.** `harbor`/`kube-prometheus-stack`/
+  `demo-app` still render with identical names from every environment's Kustomize
+  build (37.1) — that structural fact is unchanged. A manual `argocd app sync
+  routa-staging` (or `routa-prod`) still overwrites whichever environment currently
+  holds those objects, same as before; the guardrail is now that a human has to
+  invoke it and see the diff first, not that the collision stopped existing.
+- **Also matches the promotion model better**, independent of the bug fix: this repo's
+  own layout description (top of this file) already frames environment promotion as
+  a deliberate ref/overlay change, not something that happens automatically on every
+  `main` merge. `routa-prod` already had that discipline; `routa-staging` did not,
+  despite being a promotion target the same way. Both are now deliberately gated;
+  only `routa-dev` is "always current."
+- **`namePrefix` (or equivalent) in the environment overlays remains the correct
+  long-term fix** for 37.1 itself, still not done, still scoped for later — this
+  change reduces the blast radius and removes the self-triggering recurrence path,
+  it does not resolve the underlying naming collision.
+
+**Verification**: `kubectl kustomize gitops/bootstrap` — exit 0. Parsed the rendered
+output (not just visually inspected) and confirmed `routa-dev`'s `spec.syncPolicy`
+still carries `automated: {prune: true, selfHeal: true}` while `routa-staging`'s and
+`routa-prod`'s both show `automated: None`, and all three retain
+`syncOptions: [CreateNamespace=true]`. Nothing pushed.
