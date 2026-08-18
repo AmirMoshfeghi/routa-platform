@@ -3,24 +3,40 @@
 # Each Job requests 2 CPU total (parallelism 2 x 1 CPU/pod); job-a fits the quota
 # exactly and Kueue admits it immediately, job-b's combined demand (4 CPU) exceeds
 # the 2 CPU quota so it stays suspended — QuotaReserved=False — until job-a completes
-# (~60s) and releases its quota, then job-b is admitted in turn. Verify with:
+# and releases its quota, then job-b is admitted in turn. Verify with:
 #   kubectl get workloads -n kueue-demo
 #   kubectl describe workload -n kueue-demo <job-b's workload> | grep -A5 Conditions
+#
+# sleep 180, not the original 60 — bumped 2026-08-18. The quota mechanism itself was
+# never wrong (confirmed live: `kubectl get clusterqueue cluster-queue` showed
+# `ADMITTED WORKLOADS: 1`, never 2, the whole time — job-b's workload only flipped
+# Admitted after job-a's finished and released quota, exactly as designed), but at
+# 60s the full sequence (admit A -> run 60s -> finish -> admit B -> run 60s -> finish)
+# completes in under 2 minutes — easy to check after the fact and see both already
+# `ADMITTED: True, FINISHED: True` with no contention visibly caught in progress.
+# 180s per job gives a wide, comfortable window (up to ~3 minutes) where `kubectl get
+# workloads -n kueue-demo` shows job-a Admitted/running and job-b still Admitted:
+# False, suspended — long enough to actually screenshot.
 #
 # Static `name`, not `generateName` — the upstream sample
 # (kueue.sigs.k8s.io/docs/tasks/run/jobs/) uses generateName for imperative
 # `kubectl create`, but Argo CD needs a stable name to track and re-apply this
 # resource idempotently; a Job's pod template is immutable after creation, so a
 # fixed name only matters if the spec below ever changes (see ttlSecondsAfterFinished
-# note).
+# note) — which is exactly what happened here: bumping `sleep 60` to `sleep 180`
+# below changes `.spec.template`, which is immutable on an existing Job. The already-
+# applied Jobs from the previous definition must be deleted by hand before Argo
+# re-syncs this file — `kubectl apply`/selfHeal cannot patch an immutable field, it
+# will just fail the sync. See docs/decisions.md, Kueue demo section, for the exact
+# command and ordering.
 #
 # ttlSecondsAfterFinished: 300 — cleans the Job up automatically 5 minutes after
 # completion so this demo doesn't leave permanently-Completed Jobs sitting in the
-# namespace, and so a `git push` that intentionally changes this file later doesn't
-# hit "Job.spec is immutable" against a Job Argo still thinks it owns.
+# namespace, and so a future edit to this file doesn't hit the same immutable-field
+# problem against a Job Argo still thinks it owns.
 #
 # Image/command match kueue.sigs.k8s.io/docs/tasks/run/jobs/'s own sample verbatim
-# (registry.k8s.io/e2e-test-images/agnhost:2.53, sleep 60) rather than substituting a
+# (registry.k8s.io/e2e-test-images/agnhost:2.53, sleep <n>) rather than substituting a
 # different image — reusing the doc's own verified example over picking a new one.
 apiVersion: batch/v1
 kind: Job
@@ -39,7 +55,7 @@ spec:
         - name: worker
           image: registry.k8s.io/e2e-test-images/agnhost:2.53
           command: ["/bin/sh"]
-          args: ["-c", "sleep 60"]
+          args: ["-c", "sleep 180"]
           resources:
             requests:
               cpu: "1"
@@ -63,7 +79,7 @@ spec:
         - name: worker
           image: registry.k8s.io/e2e-test-images/agnhost:2.53
           command: ["/bin/sh"]
-          args: ["-c", "sleep 60"]
+          args: ["-c", "sleep 180"]
           resources:
             requests:
               cpu: "1"

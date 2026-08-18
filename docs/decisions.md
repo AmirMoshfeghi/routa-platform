@@ -3081,6 +3081,40 @@ fix is most likely a `namePrefix: dev-`/`staging-`/`prod-` (or similar) in each
 environment overlay, which Argo CD's own multi-environment app-of-apps examples use
 for exactly this reason.
 
+### 36.4b Demo runtime bumped 60s → 180s — the quota was never wrong, the window was too short (2026-08-18)
+
+Once this was actually live, the demo didn't show what it was built to show: both
+Jobs' `Workload` objects came back `ADMITTED: True, FINISHED: True` with no
+contention visibly caught in progress. Checked the quota mechanism itself before
+touching anything else — `kubectl get clusterqueue cluster-queue` showed
+`ADMITTED WORKLOADS: 1` throughout, never 2, and `job-b`'s `Workload` had only
+flipped `Admitted` after `job-a`'s finished and released its quota. The 2 CPU
+quota / 2×2 CPU demand from 36.3 was working exactly as designed — the problem was
+that at `sleep 60`, the full sequence (admit A → run 60s → finish → admit B → run
+60s → finish) completes in under two minutes, easy to check after the fact and see
+both already finished with nothing caught in progress.
+
+Fixed by bumping both Jobs' `sleep 60` to `sleep 180` in
+`gitops/platform/kueue-demo/jobs.yaml` — no change to the `ClusterQueue`/quota math,
+none was needed. This changes `.spec.template`, which is immutable on an existing
+`Job` — the two Jobs already applied from the previous definition cannot be patched
+in place; Argo's own `selfHeal` would just fail the sync against an immutable-field
+error, not fix it. **Manual cleanup required once this is pushed and Argo re-syncs**,
+before the new 180s definitions take effect:
+
+```bash
+kubectl delete job -n kueue-demo kueue-demo-job-a kueue-demo-job-b
+```
+
+Run this *after* the updated `jobs.yaml` has landed on `main` and `kueue-demo` has
+picked it up (or immediately after a manual `argocd app sync kueue-demo`) — not
+before. Deleting first while the old `sleep 60` definition is still what's in git
+just gets the old Jobs recreated unchanged by `selfHeal`. Deleting after the new
+definition is live lets `selfHeal` recreate them fresh with `sleep 180`. Job deletion
+cascades to each Job's Pods and its Kueue `Workload` object via normal Kubernetes
+garbage collection (both carry an `ownerReference` to the Job) — no separate
+`kubectl delete workload`/`pod` needed.
+
 ### 36.5 Verification
 
 - `kubectl kustomize` (kustomize v5.8.1, bundled with kubectl v1.36.3) against every
