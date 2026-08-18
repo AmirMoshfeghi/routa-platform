@@ -143,6 +143,7 @@
   - [37.5 What's still actually broken — cleanup is not a fix](#sec-37-5)
   - [37.6 Verification](#sec-37-6)
   - [37.7 `routa-staging`'s auto-sync removed — closes the recurrence risk 37.5 flagged, not the root cause](#sec-37-7)
+- [38. Harbor's public `routa` project — confirmed intentional, documented now](#sec-38)
 
 </details>
 
@@ -3446,3 +3447,47 @@ output (not just visually inspected) and confirmed `routa-dev`'s `spec.syncPolic
 still carries `automated: {prune: true, selfHeal: true}` while `routa-staging`'s and
 `routa-prod`'s both show `automated: None`, and all three retain
 `syncOptions: [CreateNamespace=true]`. Nothing pushed.
+
+---
+
+<a id="sec-38"></a>
+## 38. Harbor's public `routa` project — confirmed intentional, documented now (2026-08-18)
+
+Flagged during final review: the Harbor project that images are pulled from
+(`routa`) is public, with anonymous pull — no auth needed to `docker pull` from it. That's
+genuinely visible to anyone who looks (`report.md` and `README.md` both already state
+it plainly: "public `routa` project"), but no entry anywhere in this log actually
+reasoned through why, unlike nearly every other consequential setting in this repo.
+Worth being honest about that gap rather than backdating a decision that wasn't
+written down at the time — this entry documents the reasoning now, at final review,
+not a reconstruction of what was thought at setup time.
+
+**The reasoning, stated now:** the same trade-off shape already made explicit for the
+GitHub repo itself (`report.md`'s Security section — "A public GitHub repo was a
+deliberate trade-off... a private repo would require a deploy key stored as a cluster
+Secret — more credential surface for a small benefit"). A private Harbor project would
+need a robot account or registry credential distributed to every consumer as a
+Kubernetes `imagePullSecret` — exactly the kind of in-cluster credential surface this
+repo has avoided everywhere else (no secrets in Git, credentials only ever created
+imperatively and labeled — Section 32.6). Public + anonymous pull means the demo-app
+Deployment (`gitops/platform/demo-app/deployment.yaml`) needs no `imagePullSecret` at
+all — one fewer credential to manage, rotate, or leak. The cost is that the pushed
+image (`demo-app:v1`, a trivial nginx-based demo container, no proprietary code or
+secrets) is visible to anyone. For a short-lived assignment cluster serving a
+throwaway demo image, that cost is negligible; the credential-surface reduction is the
+same real benefit already claimed for the public-GitHub-repo choice.
+
+**Not the same question as the AppProject's `sourceRepos` tightening (Section 35)** —
+that was about which Git sources Argo CD trusts to deploy *from*; this is about who
+can pull an already-built image *out*. Different trust boundaries, same underlying
+philosophy: minimize credential surface where the data being protected isn't
+sensitive.
+
+**If this were a real production registry**, private project + a pull-scoped robot
+account, referenced via `imagePullSecret`, would be the right default. The trade-off
+only favors "public" here because the image is a disposable demo artifact and the
+deployment is short-lived — not because public-by-default is generally correct for a
+registry.
+
+Nothing changed in the cluster or the repo's config as part of this entry — Harbor's
+project visibility is unchanged, this only adds the missing reasoning. Not pushed.

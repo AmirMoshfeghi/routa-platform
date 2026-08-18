@@ -10,6 +10,12 @@ README is orientation only; it doesn't try to compete with either.
 
 ## Live
 
+**As of 2026-08-18 — kept up for review, then torn down.** The table below is a
+point-in-time snapshot, not a permanent endpoint: the instances will be shut down
+once review is done (see "Tearing this down" below for what that means for this
+section). Screenshots in `docs/screenshots/` and the report are the durable evidence
+that this worked; these URLs are not.
+
 | Service | URL | Auth |
 |---|---|---|
 | Rancher | https://rancher.95.133.252.175.sslip.io | GitHub OAuth (native provider) |
@@ -17,6 +23,22 @@ README is orientation only; it doesn't try to compete with either.
 | Harbor | https://harbor.95.133.252.180.sslip.io | Local admin (public `routa` project — anonymous pulls) |
 
 All three on Let's Encrypt production certificates via cert-manager, not self-signed.
+
+### Tearing this down
+
+When the instances come down, this section will go stale (dead links, or a different
+IP if rebuilt later) unless it's updated at the same time — recommended sequence:
+
+1. Replace the table above with a one-line status: *"Torn down as of `<date>`. Was
+   live `2026-08-18` – `<date>` for review. Screenshots in `docs/screenshots/` and
+   `docs/report.md` are the durable record; the Bootstrap procedure below reproduces
+   this from scratch."*
+2. Leave the "What's running" and "Architecture" sections untouched — they describe
+   what the repo builds, not a live endpoint, so they don't go stale on teardown.
+3. Don't delete the IPs from `docs/decisions.md` — that log is dated, point-in-time
+   narrative by design (same reasoning as Section 4.4's sizing table: a record of
+   what was true when it was written, not a live status page). Only this README
+   table needs updating; the decision log doesn't.
 
 ## What's running
 
