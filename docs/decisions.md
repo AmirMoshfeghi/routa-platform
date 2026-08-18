@@ -2579,3 +2579,105 @@ admission-webhook certs left over from before the CRDs re-applied.
 immediately after, and the PVCs from Section 28 bound successfully.
 
 Nothing installed, committed, or pushed as part of logging this.
+
+---
+
+## 30. TLS enabled on Harbor (2026-08-18)
+
+Harbor was serving plain HTTP on a public IP — a real security gap, and a blocker
+for `docker push`/`docker login` (Docker refuses to talk to an insecure registry
+without `--insecure-registry`, which is not something to rely on for task 3). Fixed
+using the same cert-manager + Traefik pattern already proven for Rancher and Argo CD.
+
+### 30.1 Traced the actual chart templates, not just the values.yaml comments
+
+Pulled the pinned chart (`harbor@1.19.2`) and read `templates/ingress/ingress.yaml`
+and the `harbor.tlsCoreSecretForIngress` helper in `templates/_helpers.tpl` directly,
+because `expose.tls.certSource` has a real trap in it that a values.yaml skim would
+miss:
+
+- `certSource: "auto"` does **not** mean "let cert-manager handle it." It means
+  Harbor's own Helm-hook Job generates a self-signed certificate, and the Ingress's
+  `tls.secretName` becomes the Ingress object's own name — a secret cert-manager
+  would then be fighting the same hook Job over, silently.
+- `certSource: "secret"` is the mode that means "I am supplying this externally."
+  Confirmed directly in the helper: under this mode, `tls.secretName` becomes
+  exactly `expose.tls.secret.secretName` — the name cert-manager's ingress-shim will
+  create and manage via the `cert-manager.io/cluster-issuer` annotation.
+- `certSource: "none"` skips the `tls.secretName` field entirely — also wrong here.
+
+Separately, `expose.tls.enabled` (not `certSource`) is what actually gates whether
+the Ingress template emits a `tls:` stanza at all — confirmed directly:
+`{{- if $tls.enabled }} tls: ... {{- end }}` in `templates/ingress/ingress.yaml`.
+Both fields have to be set correctly together: `enabled: true` with
+`certSource: auto` would have silently served Harbor's own self-signed certificate
+instead of a real Let's Encrypt one — exactly the "wrong mode, wrong silent result"
+failure mode this instruction asked to guard against, and exactly the kind of thing
+that would not show up as an error, only as a browser warning nobody was expecting.
+
+### 30.2 The values
+
+```
+expose.tls.enabled: true
+expose.tls.certSource: secret
+expose.tls.secret.secretName: harbor-ingress-tls
+expose.ingress.hosts.core: harbor.95.133.252.180.sslip.io   (already set, Section 22.2 fix)
+expose.ingress.annotations["cert-manager.io/cluster-issuer"]: letsencrypt-production
+```
+
+`expose.ingress.annotations` was set to only the one new key, not a full copy of the
+chart's default annotation map — Helm deep-merges nested maps between chart defaults
+and override values, so this preserves the chart's own default
+`ingress.kubernetes.io/ssl-redirect` and `proxy-body-size` annotations already live
+on this Ingress rather than dropping them. Confirmed by rendering (30.3), not assumed
+from general Helm knowledge alone.
+
+### 30.3 `letsencrypt-production` used directly — a deliberate exception to staging-first, stated plainly
+
+Every earlier cert on this cluster (Rancher, Argo CD) went staging-first per Section
+18's discipline, proving the DNS → Traefik → cert-manager → HTTP-01 path before
+spending a production issuance. That path is now proven **twice** on
+`95.133.252.180`. Going straight to `letsencrypt-production` for Harbor is an
+informed exception to that discipline, not a reversion to skipping it — confirmed
+both `ClusterIssuer`s are `READY=True` and have been for over two hours before making
+this call, rather than assuming they still are.
+
+### 30.4 Section 18 lesson — checked, confirmed not applicable, said so anyway
+
+Per instruction, explicitly checked rather than waved away: `kubectl get secrets -n
+harbor` showed no existing TLS secret for this hostname before this change — nothing
+stale to collide with, so cert-manager's "won't re-issue over a valid existing
+secret" behavior (Section 18) genuinely does not apply here. Recorded for the future
+anyway: if `harbor-ingress-tls` is ever left behind by a failed attempt and this
+hostname is reused, that secret would need deleting to force re-issuance, exactly as
+it did for Rancher.
+
+### 30.5 Verification — rendered against the real pinned chart, not just parsed
+
+`helm template` against the actual pulled `harbor-1.19.2.tgz` with
+`--show-only templates/ingress/ingress.yaml`, confirming the real, fully-templated
+object rather than trusting the values file alone:
+
+```yaml
+annotations:
+  cert-manager.io/cluster-issuer: letsencrypt-production
+  ingress.kubernetes.io/proxy-body-size: "0"
+  ingress.kubernetes.io/ssl-redirect: "true"
+  nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+  - secretName: harbor-ingress-tls
+    hosts:
+    - harbor.95.133.252.180.sslip.io
+  rules:
+  - ...
+    host: harbor.95.133.252.180.sslip.io
+```
+
+Confirms, field by field: the merge in 30.2 worked (cert-manager annotation added,
+chart defaults preserved); `certSource: secret` produced exactly the intended
+`secretName`; host and TLS host match. Re-built every kustomize root in the repo —
+all still exit 0. Full `REPLACE_ME` sweep across `gitops/` — still zero.
+
+Nothing installed, committed, or pushed.

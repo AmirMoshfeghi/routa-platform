@@ -1,10 +1,8 @@
 # Starter values for chart harbor@1.19.2 (see application.yaml). externalURL is now
 # set (2026-08-17) — same node as Argo CD (routa-cp-1, 95.133.252.180), different
 # sslip.io label, so no Ingress host collision with argocd.95.133.252.180.sslip.io.
-# expose.tls and persistence sizing STILL need real values before this is deployable:
-# TLS is still explicitly disabled below pending the cert-manager + sslip.io TLS plan
-# (docs/decisions.md Section 2.1), and persistence has no size set. Fetch the chart's
-# values.yaml at this exact version before filling those in (CLAUDE.md rule 1).
+# Persistence sizing has no explicit size set — fine for a demo, revisit before real
+# use.
 #
 # BUG FIXED 2026-08-18: expose.ingress.hosts.core was never set when externalURL was
 # filled in — a DIFFERENT chart field (confirmed against the pinned chart's own
@@ -18,13 +16,70 @@
 # via its nginx.conf — no proxy rules to harbor-core at all), so port-forwarding it
 # alone can never work for login; the Ingress is the only thing that unifies portal
 # and core, and it needs the right host to be reachable at all.
+#
+# TLS ENABLED 2026-08-18 (docs/decisions.md Section 30) — was plain HTTP on a public
+# IP, which also blocks `docker push`/`docker login` (Docker refuses to talk to an
+# insecure registry without --insecure-registry). Same cert-manager + Traefik pattern
+# already proven for Rancher and Argo CD.
+#
+# Traced the ACTUAL chart templates before writing this, not just the values.yaml
+# comments — `templates/ingress/ingress.yaml` and the
+# `harbor.tlsCoreSecretForIngress` helper in `templates/_helpers.tpl`, both at the
+# pinned v1.19.2 tag. Two things that are easy to get backwards:
+#
+#   expose.tls.certSource has three modes, and "auto" is a trap here: it does NOT
+#   mean "let cert-manager handle it" — it means Harbor's OWN Helm-hook Job
+#   generates a self-signed cert, and the Ingress's tls.secretName becomes the
+#   Ingress object's own name (`harbor.ingress` template), a secret cert-manager
+#   would then have to fight the same hook Job over. The mode that means "I am
+#   supplying this secret externally" is certSource: "secret" — that's the one that
+#   makes the Ingress's tls.secretName equal exactly expose.tls.secret.secretName
+#   below, which is the name cert-manager's ingress-shim will create and manage via
+#   the annotation. certSource: "none" is the third option and skips the tls block's
+#   secretName entirely — not what we want either.
+#
+#   expose.tls.enabled (not certSource) is what actually gates whether the Ingress
+#   template emits a `tls:` stanza at all — confirmed directly in
+#   templates/ingress/ingress.yaml: `{{- if $tls.enabled }} tls: ... {{- end }}`.
+#   Both fields have to be right together: enabled:true with certSource:auto would
+#   silently use Harbor's self-signed cert instead of a real Let's Encrypt one — the
+#   exact "picking the wrong mode silently does the wrong thing" the review asked to
+#   guard against.
+#
+# expose.ingress.annotations is NOT set here to the full chart-default map — Helm
+# deep-merges nested maps between chart defaults and override values, so adding only
+# the cert-manager annotation preserves the chart's own default
+# ingress.kubernetes.io/ssl-redirect and proxy-body-size annotations already live on
+# this Ingress; confirmed by inspecting the chart's own default values.yaml, they are
+# identical to what verified already-running.
+#
+# letsencrypt-production used directly, not staging-first: unlike Section 18's first
+# Rancher cert (which validated this exact DNS -> Traefik -> cert-manager -> HTTP-01
+# path for the first time on this node's public IP), that path is now proven twice
+# over on 95.133.252.180 (Rancher, then Argo CD). Going straight to production here
+# is a deliberate, informed exception to the staging-first discipline, not a
+# reversion to skipping it — confirmed both ClusterIssuers are READY=True and have
+# been for 152 minutes before making this call.
+#
+# Section 18 lesson, checked rather than assumed away: cert-manager will not
+# re-issue while a valid cert already sits in the target secret. Confirmed live —
+# `kubectl get secrets -n harbor` has no existing TLS secret for this hostname before
+# this change, so there is nothing stale to collide with. Flagged per instruction
+# even though it doesn't apply: if this hostname is ever reused after a prior failed
+# attempt left a secret behind, that secret would need deleting to force re-issuance,
+# exactly as it did for Rancher.
 expose:
   type: ingress
   tls:
-    enabled: false   # TODO: cert-manager + sslip.io TLS, per docs/decisions.md
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-ingress-tls
   ingress:
     hosts:
       core: harbor.95.133.252.180.sslip.io  # must match externalURL below
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-production
 
 externalURL: https://harbor.95.133.252.180.sslip.io
 
