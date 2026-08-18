@@ -71,8 +71,8 @@ overwrite dev's live state on a race (full account in `decisions.md`).
 **Why this shape, briefly** (full reasoning in `decisions.md`):
 
 - **Terraform / Ansible / Argo CD is a deliberate three-way split**, not incidental. Terraform only provisions (VMs, SSH key, IP outputs). Ansible only configures the OS and installs RKE2/Rancher. Everything *inside* the cluster is Argo CD's job. Each tool's surface stays small and single-purpose.
-- **3-node HA control plane, not 1+2.** The original scaffold defaulted to a single control-plane node for simplicity. I overrode this: a single node is not fault-tolerant, and the JD explicitly names high-availability environments as a competency. All three RKE2 servers hold etcd and are schedulable, so HA cost nothing extra in VM count.
-- **Argo CD manages itself.** Rather than a one-time Helm install left alone, Argo CD's own installation is a Git-tracked Application that Argo reconciles — the strongest demonstration of "GitOps structure" the brief asks for, since even the GitOps controller is declarative.
+- **3-node HA control plane, not 1+2.** The original scaffold defaulted to a single control-plane node for simplicity. I overrode this: a single node is not fault-tolerant. All three RKE2 servers hold etcd and are schedulable, so HA cost nothing extra in VM count.
+- **Argo CD manages itself.** Rather than a one-time Helm install left alone, Argo CD's own installation is a Git-tracked Application that Argo reconciles — even the GitOps controller itself is declarative.
 - **Rancher on a separate node from the workload cluster**, because a cluster manager that lives inside the cluster it manages can't recover it if it goes down.
 - **DNS via sslip.io, TLS via cert-manager + Let's Encrypt**, validated on staging first and switched to production once the path was proven — avoiding sslip.io's shared rate-limit quota as a first-attempt risk.
 
@@ -136,7 +136,7 @@ overwrite dev's live state on a race (full account in `decisions.md`).
 
 ## 3. What worked, and what didn't
 
-The brief weights debugging approach over a clean happy path, so this section is the most important one in the report. Everything below actually happened, in this build, tonight — nothing is hypothetical.
+Everything below actually happened, in this build, tonight — nothing is hypothetical.
 
 ### What worked cleanly
 

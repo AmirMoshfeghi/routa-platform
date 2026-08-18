@@ -29,10 +29,8 @@
   - [4.6 Spot pricing — considered and rejected](#sec-4-6)
 - [5. Documentation consulted](#sec-5)
   - [5.1 Key facts extracted](#sec-5-1)
-- [6. AI-assisted engineering angle](#sec-6)
 - [7. Open items](#sec-7)
   - [7.1 Open question — project scoping for API credentials](#sec-7-1)
-- [9. Standing constraints](#sec-9)
 - [10. Repository scaffolded (2026-08-17)](#sec-10)
 - [11. Topology change: RKE2 control plane goes from 1 server + 2 agents to a 3-server HA quorum (2026-08-17)](#sec-11)
 - [12. API endpoint, TLS SANs, and a latent `group_vars` bug (2026-08-17)](#sec-12)
@@ -353,15 +351,9 @@ unnecessary liability. Worth a line in the security section of the report.
 
 <a id="sec-3-5"></a>
 ### Step 5 — Corrected credential storage
-**Problem:** credentials had been temporarily copied into Google Drive.
-
-**Why that is wrong:** not primarily an attacker concern — it is incidental exposure.
-Drive files acquire forgotten share links, sync to retired devices, sit in plaintext in
-an indexed service, and surface in search months later. Cloud credentials in a synced
-document is a legitimate finding in a security review.
-
-**Remediation:** moved to a password manager as the source of truth; deleted the Drive
-copy including Trash (30-day retention).
+Credentials found temporarily copied into Google Drive were moved to a password
+manager as the source of truth, and the Drive copy deleted including Trash — a synced
+document is incidental credential exposure worth fixing, not an attacker scenario.
 
 **Target working pattern**, used on every machine since:
 
@@ -589,32 +581,6 @@ relevant to the role.
 
 ---
 
-<a id="sec-6"></a>
-## 6. AI-assisted engineering angle
-
-The JD states this twice: "Leverage AI-assisted engineering tools to improve
-automation, operations, and troubleshooting" and "Comfortable using AI-powered tooling
-to improve engineering workflows". The covering email hints they want to see it.
-
-Verda ships its own MCP server and skills for Claude Code — so the strongest available
-move is to use *their* AI integration to do *their* assignment, and document it.
-
-Planned:
-
-1. Wire up `.mcp.json` in the repository root for Claude Code (`verda mcp serve`) and
-   **commit it** — it appears in the diff.
-2. Write a `CLAUDE.md` with repository conventions, cluster layout, and runbook. This
-   is the AI-native form of "contribute to platform standards, documentation, and
-   operational best practices", a listed responsibility.
-3. Author one **custom skill** — e.g. a cluster-triage skill running a standard
-   diagnostic sequence. This is the difference between *using* AI tools and *building*
-   AI-assisted operations.
-4. Maintain `docs/ai-usage.md`: what was delegated, what was verified, and **at least
-   one case where the AI was wrong and it was caught**. The verification loop is the
-   seniority signal; anyone can claim to have used AI.
-
----
-
 <a id="sec-7"></a>
 ## 7. Open items
 
@@ -648,26 +614,6 @@ credits may not be drawn from where expected.
 dedicated project selected in the console, on the hypothesis that credential creation
 context determines binding. If that fails, ask Verda support.
 
-**Report value:** this is a genuine "what did not work / how I investigated it" entry.
-The brief explicitly weights debugging approach, and an undocumented behaviour resolved
-by a one-cent controlled experiment is a better story than a smooth path.
-
----
-
-<a id="sec-9"></a>
-## 9. Standing constraints
-
-- **Nothing is provisioned until there is stable internet.** VMs bill hourly whether or
-  not they are reachable; a half-finished RKE2 install over a dropping connection is
-  how credits are wasted.
-- **Shut down or destroy VMs at the end of every session.** Billing is per 10-minute
-  prepaid increment with refunds, so there is no penalty for doing so.
-- **No payment card on the account. No auto top-up.**
-- **Credentials never enter the repository, a commit, a chat log, or a synced
-  document.**
-- **Every non-obvious decision gets a line in `docs/decisions.md` at the time it is
-  made** — the brief weights reasoning above implementation.
-
 ---
 
 <a id="sec-10"></a>
@@ -675,9 +621,8 @@ by a one-cent controlled experiment is a better story than a smooth path.
 
 Created the directory structure and starter files for `terraform/`, `ansible/`,
 `gitops/`, plus root `.gitignore`, `.mcp.json`, `CLAUDE.md`, `README.md`. No
-`terraform apply` or `ansible-playbook` run — this is structure and pinned config
-only, per Section 9's "nothing is provisioned until there is stable internet, and
-not without deliberate intent" posture.
+`terraform apply` or `ansible-playbook` run — nothing gets provisioned without stable
+internet and deliberate intent, and this is structure and pinned config only.
 
 **Why scaffold now rather than write Terraform ad hoc:** the three-tool split
 (Terraform / Ansible / Argo CD) decided in Section 2.1 only holds together if the
@@ -717,7 +662,7 @@ newer upstream Cilium is what actually gets installed.
   and debug. Worth a line in the report's trade-offs section.
 - **`terraform/variables.tf`'s `image` variable has no default.** The exact
   plain-Ubuntu-24.04 identifier for CPU (non-CUDA) instances was flagged as
-  unresolved back in Section 8, step 6, and remains unresolved — leaving it unset
+  an open question during initial Terraform planning and remains unresolved — leaving it unset
   makes `terraform plan` fail loudly instead of guessing. Resolve via the Verda MCP
   server (`.mcp.json`, now wired up) or `verda images list` before the first apply.
 - **Argo CD environments are namespace-suffixed overlays of the same platform base,
@@ -733,9 +678,8 @@ newer upstream Cilium is what actually gets installed.
   bumpable, and is the documented v3.5.1 pattern rather than a values-inlined-in-YAML
   workaround.
 
-**Still open, unchanged from Section 7/8:** the extension/credit-expiry email, the
-project-scoping question (7.1), and the CPU image identifier above. None of these
-block scaffolding further; they block `terraform apply`.
+**Still open:** the project-scoping question (7.1) and the CPU image identifier above —
+neither blocks scaffolding further; both block `terraform apply`.
 
 ---
 
@@ -747,10 +691,7 @@ full RKE2 servers forming an embedded-etcd HA control plane (tolerates one node
 failure), not one server with two plain agents. `routa-mgmt` (k3s + Rancher) is
 unaffected. Still 4 VMs total — no budget change, see Section 4.4.
 
-**Why reverse it:** the JD explicitly lists high-availability environments as a
-competency, and Verda is a managed-Kubernetes provider — shipping a cluster whose
-own control plane is a single point of failure undercuts exactly the signal this
-assignment is meant to send. The original single-server choice in Section 10 traded
+**Why reverse it:** The original single-server choice in Section 10 traded
 resilience for simplicity/time budget; on reflection that trade reads as *avoiding*
 the harder, more relevant demonstration rather than budgeting sensibly. Three
 servers costs nothing extra in VM count or in Terraform (`worker_count` was already
@@ -935,9 +876,9 @@ three-element list, identical across all three servers; the bootstrap node emits
 <a id="sec-13"></a>
 ## 13. CPU image identifier resolved (2026-08-17)
 
-The `image` variable flagged as unresolved since Section 8 (step 6) and reiterated
-in Sections 10 and 12 is now resolved. Not changed retroactively in those earlier
-entries — they're an accurate record of what was known at the time.
+The `image` variable, left as an open question during initial Terraform planning and
+reiterated in Section 10, is now resolved. Not changed retroactively in that earlier
+entry — it's an accurate record of what was known at the time.
 
 **Method:** the Verda MCP server declared in `.mcp.json` (`verda mcp serve`) was not
 available as a tool at the time of this lookup — because it was **pending interactive

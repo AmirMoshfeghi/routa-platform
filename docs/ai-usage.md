@@ -1,12 +1,10 @@
 # AI-assisted engineering — usage and verification
 
-The job description asks for someone who can "leverage AI-assisted engineering tools
-to improve automation, operations, and troubleshooting." This document records how AI
-tooling was actually used to build this platform, where the boundaries were drawn, and
-— most importantly — the cases where AI output was wrong or misleading and how that was
-caught. The last part is the point: the value of an AI-assisted workflow is not that
-the AI is always right, but that the engineer keeps a verification loop tight enough to
-catch it when it isn't.
+This document records how AI tooling was actually used to build this platform, where
+the boundaries were drawn, and — most importantly — the cases where AI output was wrong
+or misleading and how that was caught. The last part is the point: the value of an
+AI-assisted workflow is not that the AI is always right, but that the engineer keeps a
+verification loop tight enough to catch it when it isn't.
 
 ## Tools used
 
@@ -99,10 +97,8 @@ known basedir — never from a location that happens to make the check pass.
 ### 3. A single-server control plane presented as a settled scaffold choice
 
 **What happened.** During scaffolding, the RKE2 topology was quietly set to one server plus
-two agents and labelled a time-budget decision. For a role that names high-availability
-environments as a competency, at a company that operates managed Kubernetes, a
-single-node control plane is exactly the wrong signal — one node loss destroys the
-cluster.
+two agents and labelled a time-budget decision. A single-node control plane is a single
+point of failure — one node loss destroys the cluster.
 
 **How it was caught.** Flagged in architecture review as a decision that should be made
 deliberately rather than accepted by default, and overridden to a 3-server HA control
