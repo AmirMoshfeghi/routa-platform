@@ -28,6 +28,78 @@ configs:
     # notifications) — matters once SSO is added later (deferred, per instruction).
     url: https://argocd.95.133.252.180.sslip.io  # ROUTA_ARGOCD_HOSTNAME
 
+    # --- SSO via Dex + GitHub OAuth, added 2026-08-18 --------------------------
+    # Field path verified 2026-08-18 directly against the pinned chart's own
+    # values.yaml (argo-cd-10.4.0 tag, lines 227-238): this literal dotted key,
+    # under configs.cm, is where Dex connector config actually lives. NOT the
+    # top-level `dex:` block elsewhere in this chart — that block (dex.enabled,
+    # dex.resources, dex.metrics, etc.) is only the Dex server's own runtime/
+    # deployment settings and has no `config:` field for connectors at all.
+    #
+    # Callback URL: confirmed against
+    # argo-cd.readthedocs.io/en/stable/operator-manual/user-management/ that Argo CD
+    # always uses /api/dex/callback and there is no redirectURI to set here — it
+    # must match https://argocd.95.133.252.180.sslip.io/api/dex/callback, which is
+    # what's registered on the GitHub OAuth App side. Verified correct as-is; no
+    # change needed on the GitHub App.
+    #
+    # useLoginAsID: true — confirmed directly against Dex's own source
+    # (connector/github/github.go, dexidp/dex): without this, the `sub` claim Argo's
+    # RBAC evaluates is GitHub's internal NUMERIC user id, not the username. With
+    # it, `identity.UserID = user.Login` — the actual GitHub handle — which is what
+    # configs.rbac.policy.csv below matches against. Also avoids putting a personal
+    # email address in a public repo (the alternative — matching on the `email`
+    # claim instead — would put that in policy.csv in plain sight; the GitHub
+    # username is already public in this repo's own URL, so it exposes nothing new).
+    #
+    # No `orgs:` block — deliberately, there is no GitHub org/team to scope
+    # against. REAL CONSEQUENCE, not a detail to skim: without an `orgs:` filter,
+    # ANY GitHub account can complete the OAuth login. This is why
+    # configs.rbac.policy.default below is role:readonly rather than leaving it
+    # empty — authentication alone must not imply any access. See
+    # docs/decisions.md Section 32 for the full reasoning.
+    dex.config: |
+      connectors:
+        - type: github
+          id: github
+          name: GitHub
+          config:
+            clientID: Ov23lixnKCUCKnl0LfVD
+            # $<secret-name>:<key> syntax — looks up `dex.github.clientSecret` in a
+            # SEPARATE Kubernetes Secret named argocd-github-oauth, not the default
+            # argocd-secret (which Argo CD manages itself and this deliberately does
+            # not touch). That secret is created imperatively, once, outside Git —
+            # see the kubectl command given alongside this diff. Never appears in
+            # this repo in any form.
+            clientSecret: $argocd-github-oauth:dex.github.clientSecret
+            useLoginAsID: true
+
+  rbac:
+    # Field paths verified 2026-08-18 against the same pinned chart's values.yaml
+    # (lines 445-478): configs.rbac.policy.default and configs.rbac.policy.csv.
+    #
+    # policy.default: role:readonly — the deliberate answer to "no org/team to scope
+    # against" above. role:readonly is one of Argo CD's built-in roles (no p, lines
+    # needed to define it) and grants view-only access to apps/projects/etc. Any
+    # authenticated GitHub user gets this floor; nobody gets more without an
+    # explicit g, line below.
+    policy.default: role:readonly
+
+    # g, <subject>, <role> binds a subject to a role. For SSO users this subject is
+    # matched against the token's `sub` claim (confirmed against
+    # argo-cd.readthedocs.io/en/stable/operator-manual/rbac/ — sub is always
+    # examined "in addition to" whatever `scopes` configures), which is the GitHub
+    # username specifically because of useLoginAsID: true above — this line would
+    # silently never match without that flag.
+    #
+    # AmirMoshfeghi is this repo's own GitHub owner (gitops/bootstrap/argocd.yaml's
+    # repoURL) — proposed on that basis, NOT independently confirmed as a GitHub
+    # login by any API call. Confirm this is correct before applying; a wrong
+    # username here just means nobody gets admin (fails safe, not open) but is
+    # still worth getting right the first time.
+    policy.csv: |
+      g, AmirMoshfeghi, role:admin
+
 server:
   ingress:
     enabled: true
