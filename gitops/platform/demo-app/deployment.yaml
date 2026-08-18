@@ -1,5 +1,14 @@
-# Image tag verified 2026-08-17 via https://hub.docker.com/_/nginx tags — pinned,
-# never `latest` (CLAUDE.md rule 2).
+# Image changed 2026-08-18: was nginx:1.29.8 from Docker Hub (verified 2026-08-17 via
+# https://hub.docker.com/_/nginx tags), now pulled from our own Harbor registry
+# instead — closes the GitOps loop end-to-end through infrastructure we built
+# ourselves rather than an external registry. Tag pinned, never `latest` (CLAUDE.md
+# rule 2), same discipline as before.
+#
+# The `routa` Harbor project is public, so no imagePullSecret is needed here — pods
+# in the `demo` namespace can pull anonymously. If that project's visibility is ever
+# flipped to private, this Deployment will start failing with ImagePullBackOff and
+# will need an imagePullSecret added (a Harbor robot-account credential, kept out of
+# this repo per CLAUDE.md's "no credentials in this repo, ever").
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,7 +27,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: nginx:1.29.8
+          image: harbor.95.133.252.180.sslip.io/routa/demo-app:v1
           ports:
             - containerPort: 80
           resources:
