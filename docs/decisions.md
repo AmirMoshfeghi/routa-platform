@@ -1,16 +1,7 @@
 # Verda Senior Platform Engineer Assignment — Day 0 Decision Log
 
-> **Reading note (added at final submission sweep, 2026-08-18):** the platform is now
-> fully built, deployed, and live — for current state see `docs/report.md` and
-> `README.md`. Sections 1–9 below are the original Day-0 planning log (2026-08-09),
-> preserved exactly as written — including its "WSL2" tooling references (the
-> environment used that one day, before consolidating to macOS, as Section 10 Step 6
-> narrates) and its `Status`/`Open items`/`Next session` tracking, all of which
-> reflects Day-0 state only and is superseded by Section 10 onward. Left unedited
-> below rather than rewritten in place, consistent with this log's own established
-> practice elsewhere (e.g. Section 4.4: "deliberately left unedited as a record of
-> what was planned before the constraint hit... amending it in place would erase the
-> more interesting fact").
+> **Note:** Sections 1–9 are the original Day-0 planning log (2026-08-09), preserved
+> as written; current state is in `docs/report.md`. Section 10 onward covers the build.
 
 ## Table of contents
 
