@@ -5,10 +5,26 @@
 # TLS is still explicitly disabled below pending the cert-manager + sslip.io TLS plan
 # (docs/decisions.md Section 2.1), and persistence has no size set. Fetch the chart's
 # values.yaml at this exact version before filling those in (CLAUDE.md rule 1).
+#
+# BUG FIXED 2026-08-18: expose.ingress.hosts.core was never set when externalURL was
+# filled in — a DIFFERENT chart field (confirmed against the pinned chart's own
+# values.yaml, github.com/goharbor/harbor-helm/blob/v1.19.2/values.yaml lines 29-31)
+# that controls the actual Ingress object's `spec.rules[].host`, independent of
+# externalURL (which only controls what URL Harbor tells clients/docker to use).
+# Left at the chart default `core.harbor.domain` — a placeholder nothing resolves —
+# the live Ingress was routing both harbor-core (api/service/v2/c paths) and
+# harbor-portal (/) correctly, just on a hostname nobody could reach. Found while
+# debugging a live login failure: harbor-portal serves only static files (confirmed
+# via its nginx.conf — no proxy rules to harbor-core at all), so port-forwarding it
+# alone can never work for login; the Ingress is the only thing that unifies portal
+# and core, and it needs the right host to be reachable at all.
 expose:
   type: ingress
   tls:
     enabled: false   # TODO: cert-manager + sslip.io TLS, per docs/decisions.md
+  ingress:
+    hosts:
+      core: harbor.95.133.252.180.sslip.io  # must match externalURL below
 
 externalURL: https://harbor.95.133.252.180.sslip.io
 
