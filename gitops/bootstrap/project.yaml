@@ -7,6 +7,14 @@ kind: AppProject
 metadata:
   name: routa-platform
   namespace: argocd
+  annotations:
+    # Must exist before the wave-0 Applications that reference
+    # `project: routa-platform` (argocd.yaml, cert-manager.yaml, root-*.yaml) —
+    # otherwise it lands in the same wave as them with no ordering guarantee.
+    # Closes a doc-vs-reality gap: docs/decisions.md Section 20.3 already claimed
+    # this annotation existed; it didn't until now. See Section 21.3/22 for the
+    # wider sync-wave sequencing this fits into.
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   description: Platform components and demo workloads for the routa cluster
   sourceRepos:
