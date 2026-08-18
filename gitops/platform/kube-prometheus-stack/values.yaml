@@ -5,6 +5,60 @@
 grafana:
   enabled: true
 
+# Persistent storage, added 2026-08-17 once the cluster had a default StorageClass
+# (docs/decisions.md Section 25/26) — before that, Prometheus and Alertmanager ran
+# on ephemeral emptyDir and lost all metrics/alert state on every pod restart.
+#
+# Field paths verified 2026-08-17 directly against this chart's own values.yaml at
+# the pinned tag (raw.githubusercontent.com/prometheus-community/helm-charts/
+# kube-prometheus-stack-88.3.0/charts/kube-prometheus-stack/values.yaml), not
+# assumed from a generic Prometheus Operator example — the two fields are NOT
+# parallel and it is easy to get this wrong:
+#   prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec...   ("storageSpec")
+#   alertmanager.alertmanagerSpec.storage.volumeClaimTemplate.spec...   ("storage" — no "Spec")
+#
+# storageClassName set explicitly to "local-path" rather than left unset. Unset would
+# also work — Kubernetes falls back to the cluster's default StorageClass, which
+# local-path already is — but this repo's standing preference is not to depend on a
+# reader already knowing that fact (same reasoning as the ingress-controller pin in
+# Section 20.2 and the explicit sync-wave values in Section 27: a correct default
+# is not the same guarantee as a value nobody can change out from under this chart).
+#
+# accessModes: ["ReadWriteOnce"] is not just copied from the chart's own example —
+# it is what local-path-provisioner actually supports. It provisions node-local
+# hostPath volumes (Section 25), so ReadWriteMany was never an option here regardless
+# of what this chart's default example shows.
+#
+# Sizes are modest and deliberate for a demo cluster on 100GB node disks, not a
+# capacity-planned figure: Prometheus 10Gi, Alertmanager 2Gi.
+#
+# WaitForFirstConsumer note (local-path's volumeBindingMode, set in
+# gitops/bootstrap/local-path-provisioner/local-path-storage.yaml): these PVCs stay
+# Pending until a Prometheus/Alertmanager pod actually schedules onto a node — that
+# is expected, correct behavior for this binding mode, not the Section 25 failure
+# mode. The earlier bug was PVCs Pending because no StorageClass existed to bind
+# against at all; this is PVCs Pending for a few seconds because binding is
+# deliberately deferred until pod placement is known. Worth naming the difference so
+# a `Pending` status here is not mistaken for a regression.
 prometheus:
   prometheusSpec:
     retention: 7d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi

@@ -2458,3 +2458,99 @@ a wave number there would be meaningless noise, not a fix. Full `REPLACE_ME` swe
 across `gitops/` still zero.
 
 Nothing installed, committed, or pushed.
+
+---
+
+## 28. Persistent storage for Prometheus and Alertmanager (2026-08-17)
+
+Flagged as open in Section 25.5, decided now that a default StorageClass exists.
+Prometheus and Alertmanager were running on ephemeral `emptyDir` — all metrics
+history and alert state lost on every pod restart or reschedule, independent of
+whether a StorageClass existed.
+
+### 28.1 The asymmetry the request warned about — confirmed real
+
+Fetched the pinned chart's own `values.yaml` directly at the exact tag
+(`kube-prometheus-stack-88.3.0`, not a newer or older version, not a summary) rather
+than assuming a generic Prometheus Operator example applies unchanged. It doesn't
+nest the same way for both components:
+
+```
+prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec...   ("storageSpec")
+alertmanager.alertmanagerSpec.storage.volumeClaimTemplate.spec...   ("storage" — no "Spec")
+```
+
+Both confirmed at the exact line numbers in the fetched file (`storageSpec: {}` under
+`prometheus.prometheusSpec`; `storage: {}` under `alertmanager.alertmanagerSpec`,
+elsewhere in the same file). Also confirmed `alertmanager.enabled: true` is this
+chart's own default — Alertmanager is genuinely deployed by our existing values
+(nothing disables it), so its storage config isn't a no-op.
+
+### 28.2 A second layer of the same asymmetry, found only by rendering — not a problem, but worth recording
+
+Templated the actual pinned chart (`helm template` against the pulled
+`kube-prometheus-stack-88.3.0.tgz`, not a mental model of what it should produce) and
+inspected the real output. The rendered `Prometheus` and `Alertmanager` custom
+resources — the objects the Prometheus Operator actually reads to create the real
+StatefulSet and PVC at runtime — both end up with the storage config under
+**`spec.storage`**, identically, regardless of which values.yaml key fed them:
+
+```
+Prometheus/...    spec.storage.volumeClaimTemplate.spec = {storageClassName: local-path, accessModes: [ReadWriteOnce], resources.requests.storage: 10Gi}
+Alertmanager/...  spec.storage.volumeClaimTemplate.spec = {storageClassName: local-path, accessModes: [ReadWriteOnce], resources.requests.storage: 2Gi}
+```
+
+So the `storageSpec` vs `storage` naming asymmetry exists only at the Helm
+values-input layer — the chart's own naming choice for how you configure it, not a
+difference in what gets configured. Both map onto the same underlying Prometheus
+Operator CRD field (`spec.storage`) once rendered. Worth recording specifically
+because it means the values.yaml-level asymmetry (28.1) was the right and only thing
+to get right — there wasn't a second, deeper inconsistency lurking in the actual CRD
+schema underneath it that a values-only review would have missed.
+
+### 28.3 Design choices in the values
+
+- **`storageClassName: local-path` set explicitly**, not left unset to fall back to
+  the cluster default (which local-path already is). Same reasoning as the explicit
+  `ingress-controller` pin (Section 20.2) and the explicit sync-wave values
+  (Section 27): a correct default is not the same guarantee as a value nobody can
+  change out from under this chart, and a reader of this file shouldn't need to
+  already know local-path is cluster-default to understand what storage this uses.
+- **`accessModes: ["ReadWriteOnce"]`** — not copied from the chart's commented-out
+  example by habit; it's what local-path-provisioner actually supports. It's a
+  hostPath-based, node-local provisioner (Section 25), so `ReadWriteMany` was never
+  on the table here regardless of what the chart's own example shows.
+- **Sizes**: Prometheus 10Gi, Alertmanager 2Gi — modest and deliberate for a demo
+  cluster on 100GB node disks, not a capacity-planned figure for a real workload.
+
+### 28.4 WaitForFirstConsumer — naming why a `Pending` PVC here is not Section 25 again
+
+`local-path`'s `volumeBindingMode: WaitForFirstConsumer` (set in
+`gitops/bootstrap/local-path-provisioner/local-path-storage.yaml`, upstream default,
+unchanged) means these PVCs stay `Pending` until a Prometheus/Alertmanager pod
+actually schedules onto a node — expected, correct behavior for this binding mode,
+not a regression of Section 25's bug. Worth stating the distinction plainly since
+both look identical at a glance (`Pending` PVC): Section 25's failure was PVCs
+`Pending` because no StorageClass existed to bind against **at all**; this is PVCs
+`Pending` for a few seconds because binding is deliberately deferred until pod
+placement is known. Noted directly in `values.yaml`'s own comment so a future reader
+seeing `Pending` here doesn't reflexively reopen Section 25's investigation.
+
+### 28.5 Verification
+
+- `yaml.safe_load` on `values.yaml` — confirmed the exact structure matches the
+  chart's schema field-for-field.
+- **Rendered the real chart, not just the source YAML**: `helm pull
+  prometheus-community/kube-prometheus-stack --version 88.3.0`, then `helm template
+  ... -f gitops/platform/kube-prometheus-stack/values.yaml` — clean render, no
+  errors. Parsed the output and confirmed the `Prometheus` and `Alertmanager` CRs
+  carry the exact intended `storageClassName`, `accessModes`, and size (28.2's
+  table). This is the strongest verification available short of a live cluster: it
+  proves the values actually flow through the chart's templates into the object the
+  Operator will read, not just that the input YAML is well-formed.
+- Re-built `gitops/platform` and all three `gitops/environments/*` overlays — exit 0
+  on all four (sanity check; `values.yaml` isn't itself a Kustomize resource, so
+  this mainly confirms nothing else was disturbed).
+- Full `REPLACE_ME` sweep across `gitops/` — still zero.
+
+Nothing installed, committed, or pushed.
