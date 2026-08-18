@@ -19,7 +19,7 @@
   - [Step 3 — Resolved a misreading: signup does not start a timed session](#sec-3-3)
   - [Step 4 — Account, project, and credential setup](#sec-3-4)
   - [Step 5 — Corrected credential storage](#sec-3-5)
-  - [Step 6 — Established the working environment: macOS with WSL2 as an earlier step](#sec-3-6)
+  - [Step 6 — Verda CLI auth-login bug, and the `routa` naming convention](#sec-3-6)
 - [4. Discovery results — region, sizing and cost model (locked)](#sec-4)
   - [4.1 Regional capacity varies — FIN-03 is the only viable region](#sec-4-1)
   - [4.2 Instance pricing (CPU)](#sec-4-2)
@@ -149,8 +149,8 @@
 </details>
 
 **Date:** 2026-08-09
-**Status:** Account, tooling and WSL2 environment complete. Sizing and region locked from
-live discovery data. No infrastructure provisioned. No credits consumed.
+**Status:** Account and tooling complete. Sizing and region locked from live discovery
+data.
 **Balance:** $115.35 USD (coupon redeemed into the dedicated project)
 **Target region:** FIN-03
 **Stated deadline:** 2026-08-13
@@ -389,27 +389,7 @@ Result: **zero credential material anywhere in the repository**, visible at a gl
 to a reviewer.
 
 <a id="sec-3-6"></a>
-### Step 6 — Established the working environment: macOS with WSL2 as an earlier step
-
-Initial CLI setup and account verification were done via WSL2 on Windows (Ansible has
-no supported native Windows control node). When a MacBook with Claude Code became
-available, consolidated onto it as the single working environment rather than
-maintaining two divergent machines with separate credential files and keys.
-
-**Toolchain**, via Homebrew and the documented Verda quick-install script:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/verda-cloud/verda-cli/main/scripts/install.sh | sh
-brew tap hashicorp/tap && brew install hashicorp/tap/terraform
-brew install ansible kubectl helm git kind
-```
-
-**Note:** `brew install terraform` fails directly — HashiCorp moved Terraform out of
-Homebrew core over licensing terms, hence the explicit tap. Worth flagging: **OpenTofu**
-is a fully open-source, drop-in-compatible fork born from that same licensing dispute,
-and Verda's Terraform provider works with either. Terraform was kept here as the more
-universally recognised name in an interview context — a deliberate trade-off, not a
-default.
+### Step 6 — Verda CLI auth-login bug, and the `routa` naming convention
 
 **Debugging note — interactive `auth login` wizard did not render.** Running
 `verda auth login` produced no visible output in Terminal.app; the interactive TUI
@@ -424,18 +404,6 @@ verda auth login --client-id "<id>" --client-secret "<secret>"
 `verda doctor` subsequently passed cleanly on every check. This is a genuine
 "what did not work, how it was debugged" instance — an undocumented rendering bug
 worked around with a documented non-interactive flag path.
-
-**SSH key generated fresh for this assignment**, no passphrase:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/routa_ed25519 -C "routa"
-```
-
-**Decision, not an oversight:** a passphrase would prompt on every automated
-connection — Ansible runs, Terraform SSH provisioners, calls made on the assignment's
-behalf by Claude Code — disproportionate friction for a key that is narrowly scoped
-(only these VMs), short-lived (torn down at the end of the assignment), and trivially
-revocable.
 
 **Naming scheme, decided once rather than improvised per-resource.** The Verda
 *project* keeps an explicit name (`amir-platform-assignment`) since it is a
@@ -455,11 +423,6 @@ Rationale: a billing object appropriately references the fact that this is an
 assignment; infrastructure named that way reads as temporary and unconsidered.
 Everything a reviewer would encounter *inside* the cluster is named as if going into
 production.
-
-**Full environment verified in one pass** before provisioning: all tool versions
-present, `verda doctor` fully green, credentials file and SSH keypair permissions
-correct (600 private / 644 public), balance unchanged at $115.35, and FIN-03 CPU
-availability re-confirmed immediately before starting the build (see 4.1).
 
 ---
 
