@@ -17,8 +17,23 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
   description: Platform components and demo workloads for the routa cluster
+  # Tightened 2026-08-18 (docs/decisions.md Section 35) from "*" to the exact list
+  # this platform uses — grepped every `repoURL:` occurrence across gitops/ rather
+  # than compiled from memory, so this list is exactly what's actually referenced,
+  # not what conceivably could be. Two sources some Helm-savvy readers might expect
+  # to see here — Traefik's chart repo and Rancher's chart repo — are deliberately
+  # NOT included: neither is ever referenced anywhere under gitops/. Traefik is
+  # deployed via RKE2's own bundled HelmChart CR (routa-cp-1..3) and via Ansible on
+  # the mgmt node; Rancher is installed entirely via Ansible on the mgmt node's k3s.
+  # Neither goes through Argo CD, so neither belongs in an Argo AppProject's access
+  # list. Re-grep before adding a new source rather than assuming this list is stale
+  # the next time something changes.
   sourceRepos:
-    - "*"   # tighten to this repo's URL once it has one
+    - https://github.com/AmirMoshfeghi/routa-platform  # this repo — root apps, $values refs
+    - https://argoproj.github.io/argo-helm              # argo-cd chart (gitops/bootstrap/argocd.yaml)
+    - quay.io/jetstack/charts                           # cert-manager chart, OCI (gitops/bootstrap/cert-manager.yaml)
+    - https://prometheus-community.github.io/helm-charts  # kube-prometheus-stack chart
+    - https://helm.goharbor.io                          # harbor chart
   destinations:
     - namespace: "*"
       server: https://kubernetes.default.svc
