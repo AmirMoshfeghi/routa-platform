@@ -115,16 +115,22 @@ server:
     # cert-manager-fronted Ingress.
     tls: true
     annotations:
-      # STAGING FIRST — same discipline as Rancher (docs/decisions.md Section 18):
-      # sslip.io shares one global Let's Encrypt rate-limit quota (Section 17.5), so
-      # the DNS -> ingress -> HTTP-01 -> cert path is proven on staging before
-      # spending a production issuance. Flip to
-      # cert-manager.io/cluster-issuer: letsencrypt-production once verified — and
-      # remember (Section 18): that flip alone does NOT force re-issuance, because
-      # cert-manager will not re-issue while a valid cert already sits in
-      # argocd-server-tls. Delete that secret to force re-issuance against the new
-      # issuer, same as the Rancher fix.
-      cert-manager.io/cluster-issuer: letsencrypt-staging
+      # FLIPPED TO PRODUCTION 2026-08-18 (docs/decisions.md Section 34) — staging
+      # proved the DNS -> ingress -> HTTP-01 -> cert path first, per Section 18's
+      # discipline. That path was confirmed working (staging cert issued and
+      # observed on the wire), so this is now the real, browser-trusted cert.
+      #
+      # Per Section 18: changing this annotation alone does NOT force re-issuance —
+      # cert-manager will not re-issue while a valid cert already sits in the target
+      # secret (argocd-server-tls), regardless of which Issuer the Ingress now
+      # references. The existing staging-issued cert is still within its validity
+      # window, so without deleting that secret, Argo CD would keep serving the
+      # staging cert indefinitely despite this change — exactly the Rancher incident
+      # in Section 18, and the Harbor issuance in Section 30 already accounted for
+      # this by starting fresh. The operator deletes argocd-server-tls in the argocd
+      # namespace after this syncs, which forces a fresh CertificateRequest against
+      # letsencrypt-production. Not done here — this is a values change only.
+      cert-manager.io/cluster-issuer: letsencrypt-production
 
 # Admin credential: deliberately NOT set here. Unlike the Rancher chart (which has no
 # built-in bootstrap flow and needed an explicit bootstrapPassword gate — see
