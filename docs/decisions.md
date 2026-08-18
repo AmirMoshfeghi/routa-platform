@@ -1530,3 +1530,194 @@ diagnosed from the first log line rather than treated as a mystery.
 from the `ansible/` basedir. Not re-run against routa-mgmt as part of this change;
 the value now matches what was already patched live, so the next full rebuild
 reproduces the fix instead of regressing to `strict`.
+
+---
+
+## 20. Argo CD: self-managing bootstrap plan (2026-08-17)
+
+Plan only — nothing installed. Records pinned versions, the bootstrap sequence, how it
+wires into the existing `gitops/` scaffold, and the two things still blocking.
+
+### 20.1 Versions pinned
+
+| Component | Pin | Source, verified 2026-08-17 |
+|---|---|---|
+| `argo-cd` Helm chart | **10.4.0** | `argoproj.github.io/argo-helm/index.yaml` |
+| Argo CD app version | **v3.5.1** | appVersion of chart 10.4.0; latest stable, released 2026-08-12 |
+
+Chart 10.4.0 declares `kubeVersion: ">=1.25.0-0"`. Argo CD 3.5 is tested against
+Kubernetes v1.33–v1.36; our RKE2 is v1.36.3, inside that range at the top end. Both
+constraints checked rather than assumed, because 1.36 is new enough (Section 17) that
+being outside a project's tested range is a live possibility, not a formality.
+
+The scaffold already referenced v3.5.1 in `gitops/bootstrap/project.yaml`; that
+reference is confirmed still current rather than left to rot. Note the chart is
+*community maintained* per Argo CD's own install docs — worth knowing, since it means
+chart version and app version move on separate cadences.
+
+### 20.2 RKE2 already has an ingress controller — and it is Traefik
+
+This was the open question in the task ("flag whether RKE2 needs an ingress controller
++ cert-manager first"). Answered empirically against the live cluster, not from docs:
+
+```
+kubectl get ds rke2-traefik -n kube-system
+  -> DaemonSet, 3/3 Running, hostPort 80->8000, 443->8443
+kubectl get ingressclass
+  -> traefik (default)   traefik.io/ingress-controller
+kubectl get crd | grep traefik
+  -> ingressroutes.traefik.io, middlewares.traefik.io, tlsoptions.traefik.io, ...
+```
+
+**No ingress controller install is needed on RKE2.** The reason is a notable upstream
+change: RKE2 bundles both `rke2-ingress-nginx` (chart 4.15.107) and `rke2-traefik`
+(chart 40.1.009), and per the v1.36.3+rke2r1 release notes *"Traefik is now the default
+for new clusters starting in v1.36 (existing clusters will keep their current ingress
+upon upgrade to avoid breakage)"* — with *"The `ingress-nginx` chart will not receive
+any additional updates and will be completely removed in v1.37 for community users."*
+Our cluster is new, so it came up on Traefik.
+
+That is the same conclusion reached independently for the mgmt node in Section 17.3,
+for the same underlying reason (ingress-nginx's March 2026 retirement). Convergent, not
+coordinated — RKE2 upstream and this repo made the same call from the same facts.
+
+Because Traefik is a DaemonSet with `hostPort` 80/443 on every node, and the hardening
+role already opens 80/443 publicly on all hosts (`hardening_ingress_tcp_ports`,
+Section 16), external ingress works today with no firewall change.
+
+Two follow-ups, neither blocking:
+
+- **Pin it explicitly.** The cluster relies on a *default* that changed in the version
+  we happen to run. Per CLAUDE.md rule 2 that should be `ingress-controller: traefik`
+  in the RKE2 server config rather than implicit, so a future version bump cannot
+  silently move it. Setting it to match what is already running should be a no-op.
+- **Version skew, accepted.** RKE2's bundled Traefik is chart 40.1.009 with Rancher's
+  `hardened-traefik:v3.7.8-build20260717`; the mgmt node pins Traefik chart 41.2.0
+  (appVersion v3.7.10). Different clusters, independently pinned, no shared state — not
+  worth forcing into lockstep. The install job logs a warning about the "non-standard
+  image tag"; that is Rancher's hardened rebuild, expected here, not a fault.
+
+**cert-manager, by contrast, is genuinely absent** from the RKE2 cluster (no
+`cert-manager` namespace, no CRDs). It is required for a real certificate on the Argo CD
+hostname, so it has to be part of this work.
+
+### 20.3 The structural call: singletons go in `bootstrap/`, not `platform/`
+
+The existing scaffold has `platform/` as a base that all three of
+`environments/{dev,staging,prod}` overlay. All three root Applications target the *same*
+cluster (`https://kubernetes.default.svc`) and separate environments by namespace suffix
+(`-staging`, `-prod`). That is a sound single-cluster model, but it has a consequence:
+
+**anything placed in `platform/` is instantiated three times.**
+
+For namespaced workloads (demo-app, Harbor) that is exactly right. For cluster-singleton
+infrastructure it is wrong — three Applications would contend for one set of
+cluster-scoped resources. Argo CD itself, cert-manager (cluster-scoped CRDs), and the
+Let's Encrypt `ClusterIssuer` are all singletons. So they go in `gitops/bootstrap/`,
+beside the `AppProject` and root apps, which are singletons for the same reason.
+
+This is a wiring decision, not new structure: no new top-level directory, and
+`platform/`, `environments/` and the promotion model are untouched.
+
+*Pre-existing issue noticed while working this out, flagged not fixed (out of scope):*
+`kube-prometheus-stack` sits in `platform/` and ships cluster-scoped CRDs
+(`prometheuses.monitoring.coreos.com` et al). Instantiated three times, the three
+Applications will contend over one set of CRDs. The usual fix is to install the CRDs
+once as a singleton and set `crds.enabled=false` in the per-environment releases. Worth
+a separate pass.
+
+### 20.4 Self-management: `ServerSideApply=true` is mandatory
+
+Argo CD documents self-management — *"Argo CD is able to manage itself since all
+settings are represented by Kubernetes manifests"* — with one hard requirement:
+*"When managing Argo CD with Argo CD, you **must** enable the `ServerSideApply=true`
+sync option."* Without it, field-ownership conflicts make the self-managing Application
+behave unpredictably as it rewrites the controller that is doing the rewriting.
+
+The self-managing Application uses a **multi-source** Application (chart from
+`argo-helm` pinned at 10.4.0 + `argocd-values.yaml` from this repo) — the same pattern
+`kube-prometheus-stack` and `harbor` already use, so there is one mechanism in the repo
+rather than two. The pinned chart version in Git then *is* the Argo CD upgrade lever.
+
+**Honest risk.** Self-management means a bad commit to `argocd-values.yaml` can break
+the thing that would otherwise fix it, and `prune: true` on an app that owns its own
+Deployment can in principle prune Argo CD. Mitigations: `ServerSideApply=true` as
+required; the initial Helm install is reproducible from the same values file, so
+re-bootstrapping is always possible; and `prune` stays **off** for the self-managing
+app until a first sync shows a clean diff. Every other app keeps prune on.
+
+### 20.5 Bootstrap sequence
+
+Four layers, one imperative seed:
+
+1. **Seed (imperative, once):** `helm install argo-cd argo/argo-cd --version 10.4.0`
+   into namespace `argocd`, using the *same* `argocd-values.yaml` that Git will manage —
+   so the handover in step 3 is a no-op diff rather than a reconciliation fight.
+2. **`kubectl apply -f gitops/bootstrap/bootstrap.yaml`** — the single self-referential
+   Application whose source path is `gitops/bootstrap/` itself. From here on, adding a
+   singleton app is a git commit, not another `kubectl apply`.
+3. **Argo adopts itself.** `bootstrap` renders the `AppProject`, the `argocd`
+   self-managing Application, `cert-manager`, the `ClusterIssuer`, and
+   `root-dev/staging/prod`. The `argocd` app takes ownership of the release from step 1
+   via server-side apply.
+4. **Root apps sync** → `environments/dev` → `platform/` → the existing child apps.
+
+Ordering note: Argo CD's own Ingress certificate cannot issue until cert-manager is
+running, and cert-manager arrives via step 3. So the Argo CD `Certificate` will sit
+pending for the first couple of minutes and then resolve on its own. Per the Section 18
+lesson, that is a transient to wait out, not a failure to react to.
+
+### 20.6 UI exposure, consistent with Rancher
+
+Hostname `argocd.95.133.252.180.sslip.io` (routa-cp-1, the same node as
+`rke2_api_endpoint_host`), served by the in-cluster Traefik, certificate from
+cert-manager via Let's Encrypt.
+
+- `configs.params."server.insecure": true` and TLS terminated at Traefik. Argo CD's docs
+  require this when the ingress terminates TLS, otherwise the ingress and argocd-server
+  both try to own TLS.
+- Standard `Ingress` with `ingressClassName: traefik`, not a Traefik `IngressRoute`.
+  Rationale: it matches how Rancher was exposed, and the CLI's gRPC traffic is handled
+  with `argocd login --grpc-web` rather than protocol-specific routing. The docs' Traefik
+  `IngressRoute` approach (a `Header(Content-Type, application/grpc)` rule with
+  `scheme: h2c`, terminating both protocols on one port) is the alternative if native
+  gRPC becomes worth the extra CRD.
+- `global.domain` carries the hostname through the chart; it also sets the `url` Argo
+  uses for redirects, which matters for SSO later.
+- **Let's Encrypt staging first**, then production — same discipline as Section 18, and
+  the same trap applies: flipping the `ClusterIssuer` does not re-issue while a valid
+  cert is still in the secret, so the staging secret must be deleted to force
+  re-issuance. sslip.io's shared rate limit (Section 17.5) is unchanged and is the
+  reason staging comes first.
+
+Single hostname means a single node as the entry point, so cp-1 remains a single point
+of *access* while etcd stays genuinely HA — the same deliberate limitation recorded for
+the API endpoint in Section 12, with the same answer (an LB or round-robin DNS) deferred
+for the same reason.
+
+### 20.7 Blocking: the repo has no Git remote
+
+`git remote -v` is empty. Argo CD pulls manifests from Git, so it cannot function until
+this repo is reachable from the cluster. Seven placeholders are waiting on it:
+
+```
+gitops/bootstrap/root-dev.yaml:15                       repoURL: REPLACE_ME
+gitops/bootstrap/root-prod.yaml:14                      repoURL: REPLACE_ME
+gitops/bootstrap/root-staging.yaml:12                   repoURL: REPLACE_ME
+gitops/platform/kube-prometheus-stack/application.yaml:19  repoURL: REPLACE_ME
+gitops/platform/harbor/application.yaml:16              repoURL: REPLACE_ME
+gitops/platform/demo-app/application.yaml:13            repoURL: REPLACE_ME
+gitops/platform/harbor/values.yaml:10                   externalURL: https://REPLACE_ME
+```
+
+Needs a decision from the operator: **public repo** (Argo pulls anonymously, no
+credential in the cluster — simplest, and consistent with "no credentials in this repo")
+versus **private repo** (needs a read-only deploy key or PAT as a Secret in the `argocd`
+namespace, which is new credential-handling surface). Not guessed — the choice changes
+what gets built. `AppProject.spec.sourceRepos` should be tightened from `"*"` to the
+real URL at the same time.
+
+### 20.8 Deferred
+
+SSO stays out of scope until Argo CD is up and self-managing, by instruction. Noted for
+then: SSO depends on `global.domain` being correct, which 20.6 sets.

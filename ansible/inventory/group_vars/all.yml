@@ -12,6 +12,25 @@ rke2_channel: "stable"
 
 rke2_cni: "cilium"
 
+# `ingress-controller` selects which bundled ingress controller(s) RKE2 deploys; the
+# first value becomes the default IngressClass. A list-type flag (StringSliceFlag in
+# RKE2's own source, pkg/cli/cmds/server.go at the v1.36.3+rke2r1 tag — verified
+# 2026-08-17), so it renders as a YAML list in config.yaml.j2, same shape as
+# rke2_tls_san below. Accepted values: none, traefik, ingress-nginx
+# (https://docs.rke2.io/reference/server_config, verified 2026-08-17).
+#
+# Pinned to traefik explicitly. Before this, the cluster was running on Traefik only
+# because RKE2 v1.36 changed its *default* — "Traefik is now the default for new
+# clusters starting in v1.36" per the v1.36.3+rke2r1 release notes, itself a response
+# to ingress-nginx's March 2026 retirement (Section 17.3 covers the same retirement
+# for the mgmt node's ingress choice). Relying on an implicit default that only just
+# changed, in a young release, is exactly the kind of thing rule 2 exists to prevent
+# — a future RKE2 bump could change the default again. Confirmed empirically
+# (Section 20.2) that this pin is a no-op against the already-running cluster: it
+# already deployed rke2-traefik.
+rke2_ingress_controller:
+  - traefik
+
 # 3-server RKE2 HA control plane with embedded etcd (routa-cp-1/2/3), not a single
 # server + agents. All three are full servers and all three are schedulable for
 # regular workloads — no control-plane taint. Config keys verified 2026-08-17 against

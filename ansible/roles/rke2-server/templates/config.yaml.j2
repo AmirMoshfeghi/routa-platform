@@ -8,6 +8,12 @@
 ## full list of critical flags.
 cni: {{ rke2_cni }}
 write-kubeconfig-mode: "0600"
+## Pinned rather than left to RKE2's default — see inventory/group_vars/all.yml for
+## why (the default itself moved in v1.36, and moves again in v1.37).
+ingress-controller:
+{% for controller in rke2_ingress_controller %}
+  - {{ controller }}
+{% endfor %}
 {% if rke2_tls_san | length > 0 %}
 tls-san:
 {% for san in rke2_tls_san %}
