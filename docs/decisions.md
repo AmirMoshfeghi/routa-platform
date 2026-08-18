@@ -16,7 +16,6 @@
   - [2.1 Rationale per component](#sec-2-1)
 - [3. Steps completed today, in order, with reasoning](#sec-3)
   - [Step 1 — Analysed assignment and job ad; mapped rubric](#sec-3-1)
-  - [Step 2 — Drafted deadline extension request](#sec-3-2)
   - [Step 3 — Resolved a misreading: signup does not start a timed session](#sec-3-3)
   - [Step 4 — Account, project, and credential setup](#sec-3-4)
   - [Step 5 — Corrected credential storage](#sec-3-5)
@@ -33,7 +32,6 @@
 - [6. AI-assisted engineering angle](#sec-6)
 - [7. Open items](#sec-7)
   - [7.1 Open question — project scoping for API credentials](#sec-7-1)
-- [8. Next session — first actions](#sec-8)
 - [9. Standing constraints](#sec-9)
 - [10. Repository scaffolded (2026-08-17)](#sec-10)
 - [11. Topology change: RKE2 control plane goes from 1 server + 2 agents to a 3-server HA quorum (2026-08-17)](#sec-11)
@@ -155,7 +153,7 @@
 live discovery data. No infrastructure provisioned. No credits consumed.
 **Balance:** $115.35 USD (coupon redeemed into the dedicated project)
 **Target region:** FIN-03
-**Stated deadline:** 2026-08-13 (extension not yet requested — see Open Items)
+**Stated deadline:** 2026-08-13
 
 > **Note:** This document is intended to become the seed of `docs/decisions.md` in the
 > submitted repository. The assignment brief states that reasoning, trade-offs and
@@ -316,16 +314,6 @@ worth more than the implementation effort costs.
 **Why first:** understanding what is being tested determines where effort goes.
 Building before understanding the rubric risks a technically fine cluster that misses
 the point.
-
-<a id="sec-3-2"></a>
-### Step 2 — Drafted deadline extension request
-**Why:** travel this week compresses available time, and the bonus tasks are
-high-signal. Two extra days cost the employer nothing. Asked early, before being deep
-in the work, because a late request reads as poor planning while an early one reads as
-planning.
-
-The email also asks whether **compute credits expire a fixed period after redemption**
-— the one genuine unknown that affects sequencing.
 
 <a id="sec-3-3"></a>
 ### Step 3 — Resolved a misreading: signup does not start a timed session
@@ -667,17 +655,6 @@ Planned:
 <a id="sec-7"></a>
 ## 7. Open items
 
-| Item | Status |
-|---|---|
-| Coupon redeemed into the dedicated project | **Done** — balance confirmed at $115.35 |
-| Credentials moved out of Google Drive to `~/.config/verda/env` | **Done** — verify Drive Trash also emptied (30-day retention) |
-| WSL2 environment with Verda CLI authenticated | **Done** — `verda doctor` passing |
-| Region and sizing locked from live discovery | **Done** — see Section 4 |
-| Send extension + credit-expiry email | **Pending — send next** |
-| Determine which project the CLI/API credentials operate against | **Open** — see 7.1 below |
-| Billing notification thresholds adjusted (72h / 1 day) | Optional; confirm and save |
-| Codename for cluster/hostnames/DNS | Deferred until provisioning |
-
 <a id="sec-7-1"></a>
 ### 7.1 Open question — project scoping for API credentials
 
@@ -711,78 +688,6 @@ context determines binding. If that fails, ask Verda support.
 **Report value:** this is a genuine "what did not work / how I investigated it" entry.
 The brief explicitly weights debugging approach, and an undocumented behaviour resolved
 by a one-cent controlled experiment is a better story than a smooth path.
-
----
-
-<a id="sec-8"></a>
-## 8. Next session — first actions
-
-1. **Send the extension email.** Blocking nothing technically, but the answer is more
-   useful the earlier it arrives.
-
-2. **Complete the remaining WSL2 toolchain**
-   ```bash
-   # already installed: verda CLI (authenticated, doctor passing)
-   # still needed:
-   terraform   # or opentofu
-   ansible
-   kubectl
-   helm
-   git
-   kind        # local rehearsal of the in-cluster layer
-   ```
-
-3. **Resolve the project-scoping question** (Section 7.1) — cheapest checks first,
-   then the one-cent empirical test if needed. Do this before writing Terraform, so
-   the provisioning path is known-good.
-
-4. **Re-check availability immediately before provisioning**
-   ```bash
-   verda availability --location FIN-03
-   ```
-   Inventory is live and changes. Confirm `CPU.8V.32G` is still in stock rather than
-   assuming yesterday's result holds.
-
-5. **Scaffold the repository** — directory structure, `.gitignore` first,
-   `docs/decisions.md` seeded from this document.
-
-   `.gitignore`, before the first `terraform apply`:
-   ```
-   *.tfstate
-   *.tfstate.*
-   .terraform/
-   *.tfvars
-   .envrc
-   .env
-   kubeconfig
-   *.kubeconfig
-   ```
-   Terraform state is the single most commonly leaked file in take-home assignments
-   and may contain sensitive values.
-
-6. **Write the Terraform** — roughly four resource types: `verda_ssh_key`,
-   `verda_startup_script` (optional), `verda_instance` (×4 via `for_each`), and an
-   `instance_ips` output feeding the Ansible inventory.
-
-   Values are now fixed rather than assumed:
-
-   ```hcl
-   location      = "FIN-03"
-   mgmt_type     = "CPU.4V.16G"   # os_volume 50 GiB
-   worker_type   = "CPU.8V.32G"   # os_volume 100 GiB, ×3
-   ```
-
-   Provider block stays empty — credentials come from `VERDA_CLIENT_ID` /
-   `VERDA_CLIENT_SECRET` in the environment, so no secret material enters the repo:
-
-   ```hcl
-   provider "verda" {}
-   ```
-
-   Still to confirm: the exact Ubuntu image identifier for CPU instances. The
-   documented examples are all CUDA variants intended for GPU nodes
-   (`ubuntu-24.04-cuda-13.0-open-docker`), which are the wrong choice here. Check
-   `verda vm create --help` or the images endpoint for a plain Ubuntu 24.04 image.
 
 ---
 
